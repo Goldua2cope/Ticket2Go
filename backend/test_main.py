@@ -4,13 +4,14 @@ import json
 import os
 import subprocess
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import imageio_ffmpeg
 from fastapi.testclient import TestClient
 
 from backend.main import app
 from backend.live_transcription import realtime_url
+from backend.storage import TranscriptStorageError
 
 
 class FakeFoundry:
@@ -83,6 +84,12 @@ class AudioTransportTests(unittest.TestCase):
         )
         self.environment.start()
         self.addCleanup(self.environment.stop)
+        self.storage_patch = patch(
+            "backend.main.save_meeting_transcript",
+            new=AsyncMock(side_effect=lambda meeting_id, text: f"{meeting_id}.txt"),
+        )
+        self.save = self.storage_patch.start()
+        self.addCleanup(self.storage_patch.stop)
 
     def test_live_transcript_before_stop_and_final_before_done(self):
         audio = subprocess.check_output(
@@ -131,7 +138,12 @@ class AudioTransportTests(unittest.TestCase):
                     received.append(event)
                     if event["type"] in ("done", "error"):
                         break
-                self.assertEqual(received[-1], {"type": "done"})
+                self.assertEqual(received[-1]["type"], "done")
+                self.assertEqual(received[-2]["type"], "saving")
+                self.assertEqual(
+                    received[-1]["blob_name"], f'{received[-1]["meeting_id"]}.txt'
+                )
+                self.save.assert_awaited_once_with(received[-1]["meeting_id"], "Hello world.")
                 self.assertIn(
                     {"type": "transcript", "text": "Hello world.", "isFinal": True},
                     received,
@@ -190,6 +202,7 @@ class AudioTransportTests(unittest.TestCase):
                 socket.send_json({"type": "start", "mimeType": "audio/webm"})
                 self.assertIn("Foundry rejected", socket.receive_json()["message"])
         self.assertTrue(azure.closed)
+        self.save.assert_not_awaited()
 
     def test_final_transcripts_stay_in_order(self):
         class ReorderedFoundry(FakeFoundry):
@@ -248,6 +261,19 @@ class AudioTransportTests(unittest.TestCase):
                     if event.get("isFinal"):
                         finals.append(event["text"])
                 self.assertEqual(finals, ["First.", "Second."])
+                self.assertEqual(self.save.await_args.args[1], "First. Second.")
+
+    def test_save_failure_does_not_claim_success(self):
+        self.save.side_effect = TranscriptStorageError("Storage upload failed.")
+        with patch(
+            "backend.main.stream_transcription", new=AsyncMock(return_value="Final transcript.")
+        ), TestClient(app) as client:
+            with client.websocket_connect("/ws/transcribe") as socket:
+                socket.send_json({"type": "start", "mimeType": "audio/webm"})
+                self.assertEqual(socket.receive_json()["type"], "saving")
+                self.assertEqual(socket.receive_json(), {
+                    "type": "error", "message": "Storage upload failed.",
+                })
 
 
 if __name__ == "__main__":

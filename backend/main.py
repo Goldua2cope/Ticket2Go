@@ -6,12 +6,18 @@ import logging
 import os
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from websockets.exceptions import InvalidStatus
 
 from backend.live_transcription import TranscriptionError, stream_transcription
+from backend.storage import (
+    DEFAULT_CONTAINER,
+    TranscriptStorageError,
+    save_meeting_transcript,
+)
 
 load_dotenv(Path(__file__).with_name(".env"))
 logger = logging.getLogger("uvicorn.error")
@@ -41,6 +47,10 @@ async def health():
         "azure_configured": configured,
         "transcription_enabled": configured,
         "azure_connection_verified": False,
+        "storage_configured": bool(
+            os.getenv("AZURE_STORAGE_CONNECTION_STRING", "").strip()
+            and os.getenv("AZURE_STORAGE_CONTAINER_NAME", DEFAULT_CONTAINER).strip()
+        ),
     }
 
 
@@ -61,12 +71,23 @@ async def transcribe(websocket: WebSocket):
         if not isinstance(mime_type, str) or not mime_type.startswith("audio/"):
             raise TranscriptionError("Start must include an audio MIME type.")
         logger.info("Connecting audio stream to Foundry transcription")
-        await stream_transcription(websocket, mime_type, app.state.azure)
-        logger.info("Live transcription finished")
+        meeting_id = str(uuid4())
+        transcript = await stream_transcription(websocket, mime_type, app.state.azure)
+        # Saving is the final step: the model and decoder have finished first.
+        await websocket.send_json({"type": "saving", "meeting_id": meeting_id})
+        blob_name = await save_meeting_transcript(meeting_id, transcript)
+        await websocket.send_json(
+            {
+                "type": "done",
+                "meeting_id": meeting_id,
+                "blob_name": blob_name,
+            }
+        )
+        logger.info("Meeting %s saved", meeting_id)
     except WebSocketDisconnect:
         return
     except Exception as exc:
-        if isinstance(exc, TranscriptionError):
+        if isinstance(exc, (TranscriptionError, TranscriptStorageError)):
             message = str(exc)
         elif isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
             message = "Timed out waiting for audio or Foundry. Please try again."

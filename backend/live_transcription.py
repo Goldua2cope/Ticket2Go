@@ -70,8 +70,8 @@ async def start_decoder(mime_type: str):
     )
 
 
-async def stream_transcription(browser: WebSocket, mime_type: str, config: dict):
-    """Run browser input, audio decoding, and transcript reception concurrently."""
+async def stream_transcription(browser: WebSocket, mime_type: str, config: dict) -> str:
+    """Stream updates and return the full, ordered transcript after Stop."""
     if not all(config.values()):
         raise TranscriptionError(
             "Export AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and "
@@ -96,6 +96,7 @@ async def stream_transcription(browser: WebSocket, mime_type: str, config: dict)
         input_done = False
         commits_sent = 0
         finals_received = 0
+        completed_segments = []
         tasks = []
 
         async def receive_audio():
@@ -182,8 +183,10 @@ async def stream_transcription(browser: WebSocket, mime_type: str, config: dict)
                 # Completion events may arrive out of order: emit in commit order.
                 while order and order[0] in finals:
                     current = order.popleft()
+                    text = finals.pop(current)
+                    completed_segments.append(text)
                     await browser.send_json({
-                        "type": "transcript", "text": finals.pop(current), "isFinal": True,
+                        "type": "transcript", "text": text, "isFinal": True,
                     })
                     partials.pop(current, None)
                     finals_received += 1
@@ -199,7 +202,6 @@ async def stream_transcription(browser: WebSocket, mime_type: str, config: dict)
             async with asyncio.timeout(FINAL_TIMEOUT):
                 await pcm_task
                 await finished.wait()
-            await browser.send_json({"type": "done"})
 
         try:
             input_task = asyncio.create_task(receive_audio())
@@ -214,7 +216,7 @@ async def stream_transcription(browser: WebSocket, mime_type: str, config: dict)
                 for task in done:
                     task.result()
                 if finish_task in done:
-                    return
+                    return " ".join(text for text in completed_segments if text)
         finally:
             for task in tasks:
                 task.cancel()
