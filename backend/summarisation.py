@@ -52,7 +52,7 @@ def summarize(client, model, transcript):
     Summarizes the meeting transcript.
     Summary contains Purpose & Context, Decisions Made, Action Items, Unresolved Questions and Additional Notes.
 
-    Expects a transcript in json format.
+    Expects a transcript in string format.
     Returns a string with the summary
     """
 
