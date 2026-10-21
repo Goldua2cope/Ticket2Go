@@ -8,13 +8,14 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from uuid import uuid4
 
+from azure.identity import DefaultAzureCredential
+from azure.keyvault.secrets import SecretClient
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from websockets.exceptions import InvalidStatus
 
 from backend.live_transcription import TranscriptionError, stream_transcription
 from backend.storage import (
-    DEFAULT_CONTAINER,
     TranscriptStorageError,
     save_meeting_transcript,
 )
@@ -22,23 +23,42 @@ from backend.storage import (
 load_dotenv(Path(__file__).with_name(".env"))
 logger = logging.getLogger("uvicorn.error")
 
+AZURE_OPENAI_ENDPOINT = "https://fall26-ai.services.ai.azure.com"
+AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT = "gpt-live-transcribe"
+AZURE_STORAGE_CONTAINER_NAME = "ticket2go-storage-container"
+VAULT_URL = "https://ticket2go-keyvault.vault.azure.net/"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    credential = DefaultAzureCredential()
+
+    with SecretClient(
+        vault_url=VAULT_URL,
+        credential=credential,
+    ) as client:
+        os.environ["AZURE_OPENAI_API_KEY"] = client.get_secret(
+            "azure-openai-api-key"
+        ).value
+        os.environ["AZURE_STORAGE_CONNECTION_STRING"] = client.get_secret(
+            "azure-storage-connection-string"
+        ).value
+
+    credential.close()
+
     app.state.azure = {
-        "endpoint": os.getenv("AZURE_OPENAI_ENDPOINT", "").strip(),
+        "endpoint": AZURE_OPENAI_ENDPOINT,
         "key": os.getenv("AZURE_OPENAI_API_KEY", "").strip(),
-        "deployment": (
-            os.getenv("AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT")
-            or os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
-        ).strip(),
+        "deployment": AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT,
     }
+    os.environ["AZURE_STORAGE_CONTAINER_NAME"] = AZURE_STORAGE_CONTAINER_NAME
     yield
 
 
 app = FastAPI(lifespan=lifespan)
 
 
+# Used to verify that the backend is running and configured, without exposing credentials.
 @app.get("/health")
 async def health():
     configured = all(app.state.azure.values())
@@ -49,7 +69,7 @@ async def health():
         "azure_connection_verified": False,
         "storage_configured": bool(
             os.getenv("AZURE_STORAGE_CONNECTION_STRING", "").strip()
-            and os.getenv("AZURE_STORAGE_CONTAINER_NAME", DEFAULT_CONTAINER).strip()
+            and AZURE_STORAGE_CONTAINER_NAME
         ),
     }
 

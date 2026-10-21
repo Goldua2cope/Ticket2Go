@@ -8,8 +8,6 @@ from azure.core.exceptions import AzureError, ResourceExistsError, ResourceNotFo
 from azure.storage.blob import ContentSettings
 from azure.storage.blob.aio import BlobServiceClient
 
-DEFAULT_CONTAINER = "ticket2go-container"
-
 
 class TranscriptStorageError(Exception):
     """Storage failure that can be displayed without exposing credentials."""
@@ -24,7 +22,7 @@ async def save_meeting_transcript(meeting_id: str, transcript: str) -> str:
         )
 
     connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "").strip()
-    container = os.getenv("AZURE_STORAGE_CONTAINER_NAME", DEFAULT_CONTAINER).strip()
+    container = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "").strip()
     if not connection_string or not container:
         raise TranscriptStorageError(
             "Transcript not saved. Export AZURE_STORAGE_CONNECTION_STRING and "
@@ -55,7 +53,7 @@ async def save_meeting_transcript(meeting_id: str, transcript: str) -> str:
         ) from None
     except ResourceNotFoundError:
         raise TranscriptStorageError(
-            "Transcript not saved. Check that AZURE_STORAGE_CONTAINER names an existing container."
+            "Transcript not saved. Check that AZURE_STORAGE_CONTAINER_NAME names an existing container."
         ) from None
     except (TimeoutError, AzureError, ValueError):
         raise TranscriptStorageError(
