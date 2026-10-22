@@ -1,3 +1,6 @@
+import json
+from openai import AsyncOpenAI
+
 instruction = """
 You are a professional meeting assistant. Your task is to produce an accurate, concise, and structured summary of the provided meeting transcript.
 
@@ -47,25 +50,25 @@ Include only important information that does not fit naturally into the precedin
 Return only the summary. Do not include commentary about the summarization process.
 """
 
-def summarize(client, model, transcript):
+async def summarize(client: AsyncOpenAI, model: str, transcript: dict) -> str:
     """
     Summarizes the meeting transcript.
     Summary contains Purpose & Context, Decisions Made, Action Items, Unresolved Questions and Additional Notes.
 
-    Expects a transcript in string format.
+    Expects a transcript a dictionary.
     Returns a string with the summary
     """
 
-    if not isinstance(transcript, str):
-        raise TypeError("transcript must be a string.")
+    if not isinstance(transcript, dict):
+        raise TypeError("transcript must be in JSON format.")
 
     if not transcript:
         raise ValueError("transcript must not be empty.")
-
-    response = client.responses.create(
+    
+    response = await client.responses.create(
         model=model,
         instructions=instruction,
-        input=transcript,
+        input=json.dumps(transcript, ensure_ascii=False),
         temperature=0.4,
         # Garantees the output to be at most ca. 500 words
         max_output_tokens=700
