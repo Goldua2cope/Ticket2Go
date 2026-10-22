@@ -94,6 +94,8 @@ async def lifespan(app: FastAPI):
         app.state.postgres = postgres_client
         app.state.container = container_client
         app.state.openai = ai_client
+        app.state.model_embedding = "gpt-live-transcribe"
+        app.state.model_response = "gpt-5.4"
 
         yield
         # AsyncStackExit will close all connections automatically

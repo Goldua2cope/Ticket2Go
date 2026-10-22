@@ -70,7 +70,7 @@ async def start_decoder(mime_type: str):
     )
 
 
-async def stream_transcription(browser: WebSocket, mime_type: str, config: dict) -> str:
+async def stream_transcription(browser: WebSocket, mime_type: str, config: dict):
     """Stream updates and return the full, ordered transcript after Stop."""
     if not all(config.values()):
         raise TranscriptionError(
@@ -216,7 +216,13 @@ async def stream_transcription(browser: WebSocket, mime_type: str, config: dict)
                 for task in done:
                     task.result()
                 if finish_task in done:
-                    return " ".join(text for text in completed_segments if text)
+                    return {
+                        "segments": [
+                            {"text": text}
+                            for text in completed_segments
+                            if text
+                        ]
+                    }
         finally:
             for task in tasks:
                 task.cancel()
