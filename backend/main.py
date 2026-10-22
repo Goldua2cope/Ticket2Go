@@ -10,8 +10,9 @@ from uuid import uuid4
 
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
-from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from websockets.exceptions import InvalidStatus
 
 from backend.live_transcription import TranscriptionError, stream_transcription
@@ -19,60 +20,48 @@ from backend.storage import (
     TranscriptStorageError,
     save_meeting_transcript,
 )
+from backend.config import lifespan, check_cosmos, check_key_vault, check_postgres, check_storage_container
 
-load_dotenv(Path(__file__).with_name(".env"))
+
 logger = logging.getLogger("uvicorn.error")
 
-AZURE_OPENAI_ENDPOINT = "https://fall26-ai.services.ai.azure.com"
 AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT = "gpt-live-transcribe"
-AZURE_STORAGE_CONTAINER_NAME = "ticket2go-storage-container"
-VAULT_URL = "https://ticket2go-keyvault.vault.azure.net/"
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    credential = DefaultAzureCredential()
-
-    with SecretClient(
-        vault_url=VAULT_URL,
-        credential=credential,
-    ) as client:
-        os.environ["AZURE_OPENAI_API_KEY"] = client.get_secret(
-            "azure-openai-api-key"
-        ).value
-        os.environ["AZURE_STORAGE_CONNECTION_STRING"] = client.get_secret(
-            "azure-storage-connection-string"
-        ).value
-
-    credential.close()
-
-    app.state.azure = {
-        "endpoint": AZURE_OPENAI_ENDPOINT,
-        "key": os.getenv("AZURE_OPENAI_API_KEY", "").strip(),
-        "deployment": AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT,
-    }
-    os.environ["AZURE_STORAGE_CONTAINER_NAME"] = AZURE_STORAGE_CONTAINER_NAME
-    yield
-
-
+# Initialize Application
 app = FastAPI(lifespan=lifespan)
+# Backend serves Frontend
+frontend_dist = (Path(__file__).resolve().parent.parent / "frontend" / "dist")
+app.mount("/", StaticFiles(directory=frontend_dist, html=True))
 
-
-# Used to verify that the backend is running and configured, without exposing credentials.
 @app.get("/health")
 async def health():
-    configured = all(app.state.azure.values())
-    return {
-        "status": "ok",
-        "azure_configured": configured,
-        "transcription_enabled": configured,
-        "azure_connection_verified": False,
-        "storage_configured": bool(
-            os.getenv("AZURE_STORAGE_CONNECTION_STRING", "").strip()
-            and AZURE_STORAGE_CONTAINER_NAME
-        ),
+    """
+    Checks weather Azure resources are reachable.
+    """
+    checks = {
+        "postgres": check_postgres,
+        "cosmos": check_cosmos,
+        "key_vault": check_key_vault,
+        "storage_container": check_storage_container
     }
 
+    results = dict(zip(
+        checks,
+        await asyncio.gather(
+            *(
+                check(app) for check in checks.values()
+            ))
+    ))
+
+    healthy = all(results.values())
+
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "ready" if healthy else "not_ready",
+            "checks": results,
+        }
+    )
 
 @app.websocket("/ws/transcribe")
 async def transcribe(websocket: WebSocket):
