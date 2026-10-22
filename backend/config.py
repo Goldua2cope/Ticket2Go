@@ -3,6 +3,8 @@ Centralised file for configurations, connections and connectivity checks.
 """
 
 import asyncpg
+import asyncio
+import logging
 from contextlib import asynccontextmanager, AsyncExitStack
 from fastapi import FastAPI
 from openai import AsyncOpenAI
@@ -12,11 +14,14 @@ from azure.keyvault.secrets.aio import SecretClient
 from azure.cosmos.aio import CosmosClient
 from azure.storage.blob.aio import BlobServiceClient
 
+logger = logging.getLogger(__name__)
+
 # Configuration Variables
 AZURE_OPENAI_ENDPOINT = "https://fall26-ai.services.ai.azure.com"
 AZURE_STORAGE_CONTAINER_NAME = "ticket2go-storage-container"
 VAULT_URL = "https://ticket2go-keyvault.vault.azure.net/"
 POSTGRES_DB = "ticket2go-psql-db"
+COSMOS_DB = "ticket2go-cosmos-db"
 
 # Mapping {variable name : secret in Key vault}
 VAULT_SECRETS = {
@@ -63,10 +68,12 @@ async def lifespan(app: FastAPI):
         cosmos_client = CosmosClient.from_connection_string(secrets["cosmos_con_str"])
         stack.push_async_callback(cosmos_client.close)
 
-        psql_uri = f"postgresql://{secrets["psql_admin"]}:{secrets["psql_password"]}@{secrets["psql_host"]}/{POSTGRES_DB}?sslmode=require"
-        
         postgres_client = await asyncpg.create_pool(
-            dsn=psql_uri,
+            host=secrets["psql_host"],
+            user=secrets["psql_admin"],
+            password=secrets["psql_password"],
+            database=POSTGRES_DB,
+            ssl="require",
             min_size=2,
             max_size=10,
         )
@@ -76,7 +83,6 @@ async def lifespan(app: FastAPI):
         stack.push_async_callback(storage_client.close)
 
         container_client = storage_client.get_container_client(AZURE_STORAGE_CONTAINER_NAME)
-        stack.push_async_callback(container_client.close)
 
         ai_client = AsyncOpenAI(api_key=secrets["api_key"])
         stack.push_async_callback(ai_client.close)
@@ -97,39 +103,30 @@ async def check_postgres(app):
     """
     Checks connectivity to PostgreSQL Server.
     """
-    try:
-        async with app.state.postgres.acquire() as conn:
-            await conn.fetchval("SELECT 1")
-        return True
-    except Exception:
-        return False
+    async with app.state.postgres.acquire() as conn:
+        await conn.fetchval("SELECT 1")
+
 
 async def check_storage_container(app):
     """
     Checks connectivity to Storage Container.
     """
-    try:
-        await app.state.container.get_container_properties()
-        return True
-    except Exception:
-        return False
+    await app.state.container.get_container_properties()
 
-async def check_key_vault(app):
-    """
-    Checks connectivity to Key Vault.
-    """
-    try:
-        await app.state.key_vault.get_secret("psql-host")
-        return True
-    except Exception:
-        return False
     
 async def check_cosmos(app):
     """
     Checks connectivity to CosmosDB server.
     """
+    await app.state.cosmos.get_database_client(COSMOS_DB).read()
+
+async def run_health_check(app, name, check, timeout=3.0):
     try:
-        await app.state.cosmos.read()
-        return True
+        await asyncio.wait_for(check(app), timeout=timeout)
+        return name, True
+    except asyncio.TimeoutError:
+        logger.warning("Health check timed out: %s", name)
     except Exception:
-        return False
+        logger.exception("Health check failed: %s", name)
+
+    return name, False
