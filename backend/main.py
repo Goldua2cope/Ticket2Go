@@ -26,7 +26,6 @@ logger = logging.getLogger("uvicorn.error")
 # Initialize Application
 app = FastAPI(lifespan=lifespan)
 
-    
 @app.get("/health")
 async def health():
     """

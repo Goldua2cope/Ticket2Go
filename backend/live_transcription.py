@@ -218,11 +218,7 @@ async def stream_transcription(browser: WebSocket, mime_type: str, config: State
                     task.result()
                 if finish_task in done:
                     return {
-                        "segments": [
-                            {"text": text}
-                            for text in completed_segments
-                            if text
-                        ]
+                        "segments": completed_segments
                     }
         finally:
             for task in tasks:

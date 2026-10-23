@@ -128,12 +128,15 @@ async def _embed_and_upsert_documents(
 async def ingest_meeting_transcript(
     *,
     meeting_id: str,
-    transcript: str,
+    transcription: dict,
     meeting_title: str | None = None,
     meeting_date: str | None = None,
     source_blob_uri: str | None = None,
     client_config: State
 ) -> dict[str, Any]:
+    
+    transcript = str(transcription["segment"])
+
     """Chunk, embed, and store a completed meeting transcript."""
     if not meeting_id.strip():
         raise ValueError("meeting_id must not be empty.")
