@@ -135,7 +135,7 @@ async def ingest_meeting_transcript(
     client_config: State
 ) -> dict[str, Any]:
     
-    transcript = str(transcription["segment"])
+    transcript = str(transcription["segment"][0]["text"])
 
     """Chunk, embed, and store a completed meeting transcript."""
     if not meeting_id.strip():
