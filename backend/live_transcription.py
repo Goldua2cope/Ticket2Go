@@ -23,11 +23,17 @@ class TranscriptionError(Exception):
 def realtime_url(endpoint: str) -> str:
     parsed = urlsplit(endpoint.strip())
     if parsed.scheme != "https" or not parsed.netloc:
-        raise TranscriptionError("AZURE_OPENAI_ENDPOINT must be an HTTPS resource endpoint.")
+        raise TranscriptionError(
+            "AZURE_OPENAI_ENDPOINT must be an HTTPS resource endpoint."
+        )
     path = parsed.path.rstrip("/")
     if path not in ("", "/openai", "/openai/v1"):
-        raise TranscriptionError("Use your Azure resource endpoint, not a deployment or project URL.")
-    return urlunsplit(("wss", parsed.netloc, "/openai/v1/realtime", "intent=transcription", ""))
+        raise TranscriptionError(
+            "Use your Azure resource endpoint, not a deployment or project URL."
+        )
+    return urlunsplit(
+        ("wss", parsed.netloc, "/openai/v1/realtime", "intent=transcription", "")
+    )
 
 
 def session_update(deployment: str) -> dict:
@@ -35,17 +41,22 @@ def session_update(deployment: str) -> dict:
         "type": "session.update",
         "session": {
             "type": "transcription",
-            "audio": {"input": {
-                "format": {"type": "audio/pcm", "rate": 24000},
-                "transcription": {"model": deployment},
-                "turn_detection": None,
-            }},
+            "audio": {
+                "input": {
+                    "format": {"type": "audio/pcm", "rate": 24000},
+                    "transcription": {"model": deployment},
+                    "turn_detection": None,
+                }
+            },
         },
     }
 
 
 def check_error(event: dict):
-    if event.get("type") in ("error", "conversation.item.input_audio_transcription.failed"):
+    if event.get("type") in (
+        "error",
+        "conversation.item.input_audio_transcription.failed",
+    ):
         # Do not forward arbitrary upstream details that could contain input or credentials.
         raise TranscriptionError(
             "Foundry rejected transcription. Check the deployment supports "
@@ -57,14 +68,32 @@ async def start_decoder(mime_type: str):
     container = mime_type.split(";")[0].strip()
     formats = {"audio/webm": "matroska", "audio/ogg": "ogg", "audio/mp4": "mov"}
     if container not in formats:
-        raise TranscriptionError("Unsupported audio format. Try Chrome, Firefox, or Safari.")
+        raise TranscriptionError(
+            "Unsupported audio format. Try Chrome, Firefox, or Safari."
+        )
     return await asyncio.create_subprocess_exec(
         imageio_ffmpeg.get_ffmpeg_exe(),
-        "-hide_banner", "-loglevel", "error",
-        "-probesize", "32", "-analyzeduration", "0",
-        "-f", formats[container], "-i", "pipe:0",
-        "-vn", "-ac", "1", "-ar", "24000", "-f", "s16le",
-        "-flush_packets", "1", "pipe:1",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-probesize",
+        "32",
+        "-analyzeduration",
+        "0",
+        "-f",
+        formats[container],
+        "-i",
+        "pipe:0",
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "24000",
+        "-f",
+        "s16le",
+        "-flush_packets",
+        "1",
+        "pipe:1",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
@@ -82,7 +111,9 @@ async def stream_transcription(browser: WebSocket, mime_type: str, config: State
     async with connect(
         realtime_url(config.azure_openai_endpoint),
         additional_headers={"api-key": config.azure_openai_api_key},
-        open_timeout=10, close_timeout=2, max_size=4 * 1024 * 1024,
+        open_timeout=10,
+        close_timeout=2,
+        max_size=4 * 1024 * 1024,
     ) as azure:
         await azure.send(json.dumps(session_update(config.model_transcription)))
         async with asyncio.timeout(10):
@@ -115,9 +146,13 @@ async def stream_transcription(browser: WebSocket, mime_type: str, config: State
                     try:
                         message = json.loads(event.get("text") or "")
                     except json.JSONDecodeError:
-                        raise TranscriptionError("Expected binary audio or a stop message.")
+                        raise TranscriptionError(
+                            "Expected binary audio or a stop message."
+                        )
                     if not isinstance(message, dict) or message.get("type") != "stop":
-                        raise TranscriptionError("Expected binary audio or a stop message.")
+                        raise TranscriptionError(
+                            "Expected binary audio or a stop message."
+                        )
                     decoder.stdin.close()
                     return
 
@@ -136,26 +171,40 @@ async def stream_transcription(browser: WebSocket, mime_type: str, config: State
                 if pcm:
                     total_bytes += len(pcm)
                     turn_bytes += len(pcm)
-                    await azure.send(json.dumps({
-                        "type": "input_audio_buffer.append",
-                        "audio": base64.b64encode(pcm).decode("ascii"),
-                    }))
+                    await azure.send(
+                        json.dumps(
+                            {
+                                "type": "input_audio_buffer.append",
+                                "audio": base64.b64encode(pcm).decode("ascii"),
+                            }
+                        )
+                    )
                     # Bound each turn while retaining live deltas between commits.
                     if turn_bytes >= PCM_BYTES_PER_SECOND * 10:
                         commits_sent += 1
-                        await azure.send(json.dumps({"type": "input_audio_buffer.commit"}))
+                        await azure.send(
+                            json.dumps({"type": "input_audio_buffer.commit"})
+                        )
                         turn_bytes = 0
                 if at_end:
                     break
             if await decoder.wait() != 0 or not total_bytes:
-                raise TranscriptionError("Could not decode the recorded audio. Please try again.")
+                raise TranscriptionError(
+                    "Could not decode the recorded audio. Please try again."
+                )
             if turn_bytes:
                 # Realtime commits need at least 100 ms; pad only a short final tail.
                 if turn_bytes < 4800:
-                    await azure.send(json.dumps({
-                        "type": "input_audio_buffer.append",
-                        "audio": base64.b64encode(bytes(4800 - turn_bytes)).decode("ascii"),
-                    }))
+                    await azure.send(
+                        json.dumps(
+                            {
+                                "type": "input_audio_buffer.append",
+                                "audio": base64.b64encode(
+                                    bytes(4800 - turn_bytes)
+                                ).decode("ascii"),
+                            }
+                        )
+                    )
                 commits_sent += 1
                 await azure.send(json.dumps({"type": "input_audio_buffer.commit"}))
             input_done = True
@@ -186,17 +235,27 @@ async def stream_transcription(browser: WebSocket, mime_type: str, config: State
                     current = order.popleft()
                     text = finals.pop(current)
                     completed_segments.append(text)
-                    await browser.send_json({
-                        "type": "transcript", "text": text, "isFinal": True,
-                    })
+                    await browser.send_json(
+                        {
+                            "type": "transcript",
+                            "text": text,
+                            "isFinal": True,
+                        }
+                    )
                     partials.pop(current, None)
                     finals_received += 1
-                await browser.send_json({
-                    "type": "transcript", "text": " ".join(partials.values()), "isFinal": False,
-                })
+                await browser.send_json(
+                    {
+                        "type": "transcript",
+                        "text": " ".join(partials.values()),
+                        "isFinal": False,
+                    }
+                )
                 if input_done and finals_received == commits_sent:
                     finished.set()
-            raise TranscriptionError("Foundry closed the connection before transcription finished.")
+            raise TranscriptionError(
+                "Foundry closed the connection before transcription finished."
+            )
 
         async def finish_recording():
             await input_task
@@ -213,13 +272,13 @@ async def stream_transcription(browser: WebSocket, mime_type: str, config: State
             # Surface failures immediately even while the microphone is still active.
             pending = set(tasks)
             while pending:
-                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
                 for task in done:
                     task.result()
                 if finish_task in done:
-                    return {
-                        "segments": completed_segments
-                    }
+                    return {"segments": [{"text": " ".join(completed_segments)}]}
         finally:
             for task in tasks:
                 task.cancel()

@@ -1,7 +1,11 @@
-import AudioRecorder from './AudioRecorder'
+import AudioRecorder from "./components/AudioRecorder";
 
 function App() {
-  return <AudioRecorder />
+  return (
+    <>
+      <AudioRecorder />
+    </>
+  );
 }
 
 export default App;

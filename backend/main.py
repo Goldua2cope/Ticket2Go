@@ -7,13 +7,17 @@ from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 import uvicorn
+from fastapi.staticfiles import StaticFiles
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from openai import OpenAI
+from pydantic import BaseModel, Field, field_validator
 from websockets.exceptions import InvalidStatus
 
 from backend.live_transcription import TranscriptionError, stream_transcription
+from backend.summarisation import summarize
 from backend.storage import (
     TranscriptStorageError,
     save_meeting_transcript,
@@ -103,11 +107,33 @@ async def transcribe(websocket: WebSocket):
         # Persist the transcript and retrieve its storage identifier.
         blob_name = await save_meeting_transcript(meeting_id, transcript, app.state)
 
-        # Tell the client that transcription and storage have completed.
+        # Generate from the complete saved transcript over the same connection.
+        await websocket.send_json({
+            "type": "summarizing",
+            "meeting_id": meeting_id,
+            "blob_name": blob_name,
+        })
+        try:
+            async with asyncio.timeout(60):
+                summary = await summarize(
+                    app.state.ai_client, app.state.model_response, transcript
+                )
+            if not summary.strip():
+                raise ValueError("Empty summary")
+        except Exception as exc:
+            logger.warning("Summary failed (%s)", type(exc).__name__)
+            await websocket.send_json({
+                "type": "error",
+                "message": "Your transcript was saved, but summary generation failed. Your transcript is still on this page.",
+            })
+            return
+
+        # Completion now includes the generated summary.
         await websocket.send_json({
             "type": "done",
             "meeting_id": meeting_id,
             "blob_name": blob_name,
+            "summary": summary,
         })
         logger.info("Meeting %s saved", meeting_id)
 
@@ -146,5 +172,5 @@ frontend_dist = (Path(__file__).resolve().parent.parent / "frontend" / "dist")
 app.mount("/", StaticFiles(directory=frontend_dist, html=True))
 
 if __name__ == "__main__":
-    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000)
+    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=True)
 

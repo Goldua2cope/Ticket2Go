@@ -1,17 +1,17 @@
 import { useEffect, useRef, useState } from "react";
+import MeetingSummary from "./MeetingSummary";
 
 export default function AudioRecorder() {
   const [status, setStatus] = useState<
-    "idle" | "starting" | "recording" | "stopping" | "saving"
+    "idle" | "starting" | "recording" | "stopping" | "saving" | "summarizing"
   >("idle");
-  const [audioUrl, setAudioUrl] = useState("");
   const [error, setError] = useState("");
   const [transcript, setTranscript] = useState("");
   const [partial, setPartial] = useState("");
   const [savedMeetingId, setSavedMeetingId] = useState("");
+  const [summary, setSummary] = useState("");
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const audioUrlRef = useRef("");
   const mountedRef = useRef(false);
   const disconnectRef = useRef<() => void>(() => {});
 
@@ -29,7 +29,6 @@ export default function AudioRecorder() {
       }
       if (recorder && recorder.state !== "inactive") recorder.stop();
       streamRef.current?.getTracks().forEach((track) => track.stop());
-      URL.revokeObjectURL(audioUrlRef.current);
     };
   }, []);
 
@@ -47,6 +46,7 @@ export default function AudioRecorder() {
     setTranscript("");
     setPartial("");
     setSavedMeetingId("");
+    setSummary("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (!mountedRef.current) {
@@ -56,7 +56,6 @@ export default function AudioRecorder() {
       streamRef.current = stream;
       const recorder = new MediaRecorder(stream);
       recorderRef.current = recorder;
-      const chunks: Blob[] = [];
       // Vite proxies this path to the local backend during development.
       const endpoint = new URL(
         import.meta.env.VITE_TRANSCRIPTION_WS_URL || "/ws/transcribe",
@@ -135,13 +134,31 @@ export default function AudioRecorder() {
               30_000,
             );
           } else if (
-            message.type === "done" &&
+            message.type === "summarizing" &&
             stopping &&
             typeof message.meeting_id === "string"
+          ) {
+            clearTimeout(timer);
+            setSavedMeetingId(message.meeting_id);
+            setStatus("summarizing");
+            timer = setTimeout(
+              () =>
+                fail(
+                  "Summary generation took too long. Your transcript was saved and is still on this page.",
+                ),
+              75_000,
+            );
+          } else if (
+            message.type === "done" &&
+            stopping &&
+            typeof message.meeting_id === "string" &&
+            typeof message.summary === "string" &&
+            message.summary.trim()
           ) {
             disconnect();
             setPartial("");
             setSavedMeetingId(message.meeting_id);
+            setSummary(message.summary);
             setStatus("idle");
           } else if (message.type === "error") {
             fail(
@@ -180,7 +197,7 @@ export default function AudioRecorder() {
       };
       recorder.ondataavailable = (event) => {
         if (event.data.size === 0) return;
-        chunks.push(event.data);
+
         if (!failed && socket.readyState === WebSocket.OPEN) {
           // Stop instead of accumulating unbounded audio on a slow connection.
           if (socket.bufferedAmount > 1024 * 1024) {
@@ -196,14 +213,6 @@ export default function AudioRecorder() {
         stream.getTracks().forEach((track) => track.stop());
         if (!mountedRef.current) return;
 
-        if (chunks.length > 0) {
-          const audio = new Blob(chunks, { type: recorder.mimeType });
-          URL.revokeObjectURL(audioUrlRef.current);
-          audioUrlRef.current = URL.createObjectURL(audio);
-          setAudioUrl(audioUrlRef.current);
-        } else if (!failed) {
-          setError("No audio was captured. Please try again.");
-        }
         if (failed) {
           setStatus("idle");
         } else if (socket.readyState === WebSocket.OPEN) {
@@ -267,7 +276,9 @@ export default function AudioRecorder() {
               ? "Finishing transcript…"
               : status === "saving"
                 ? "Saving transcript…"
-                : "Ready to record"}
+                : status === "summarizing"
+                  ? "Generating summary…"
+                  : "Ready to record"}
       </p>
       {error && (
         <p role="alert" className="text-red-700">
@@ -293,18 +304,7 @@ export default function AudioRecorder() {
             "Your words will appear here when the transcription server is connected."}
         </p>
       </div>
-      {audioUrl && (
-        <div className="space-y-2">
-          <h2 className="text-lg font-semibold">Your recording</h2>
-          <audio
-            className="w-full"
-            key={audioUrl}
-            controls
-            src={audioUrl}
-            aria-label="Your meeting recording"
-          />
-        </div>
-      )}
+      {summary && <MeetingSummary summary={summary} />}
     </section>
   );
 }

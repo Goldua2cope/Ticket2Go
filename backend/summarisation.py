@@ -8,17 +8,17 @@ You are a professional meeting assistant. Your task is to produce an accurate, c
 
 Create a summary of at most 500 words, using the following sections in this exact order:
 
--- 1. Purpose & Context --
+## 1. Purpose & Context
 Summarize the meeting's purpose, key topics, and essential background information. Include only context necessary to understand the meeting's outcomes.
 
--- 2. Decisions Made --
+## 2. Decisions Made
 List decisions that were explicitly agreed upon or confirmed during the meeting.
 
 - Distinguish confirmed decisions from proposals, suggestions, and ongoing discussions.
 - Include relevant conditions or qualifications.
 - Do not present tentative or disputed proposals as final decisions.
 
--- 3. Action Items with Owner and Deadline --
+## 3. Action Items with Owner and Deadline
 List tasks explicitly assigned or clearly committed to during the meeting. For each action item, include:
 
 - **Task:** A concise description of the required work.
@@ -27,10 +27,10 @@ List tasks explicitly assigned or clearly committed to during the meeting. For e
 
 Use "Not specified" for missing owners or deadlines. Preserve relative deadlines as stated unless the meeting date and intended interpretation are clear enough to resolve them reliably. Do not invent assignments or commitments.
 
--- 4. Unresolved Questions --
+## 4. Unresolved Questions
 List important questions, decisions, dependencies, risks, or blockers that remain unresolved at the end of the meeting. Distinguish open issues from matters that were resolved during the discussion.
 
--- 5. Additional Notes --
+## 5. Additional Notes
 Include only important information that does not fit naturally into the preceding sections, such as relevant caveats or material context. Omit this section's content if there is nothing useful to add.
 
 ## Accuracy and interpretation rules
@@ -50,6 +50,7 @@ Include only important information that does not fit naturally into the precedin
 Return only the summary. Do not include commentary about the summarization process.
 """
 
+
 async def summarize(client: AsyncOpenAI, model: str, transcript: dict) -> str:
     """
     Summarizes the meeting transcript.
@@ -64,14 +65,14 @@ async def summarize(client: AsyncOpenAI, model: str, transcript: dict) -> str:
 
     if not transcript:
         raise ValueError("transcript must not be empty.")
-    
+
     response = await client.responses.create(
         model=model,
         instructions=instruction,
         input=json.dumps(transcript, ensure_ascii=False),
         temperature=0.4,
         # Garantees the output to be at most ca. 500 words
-        max_output_tokens=700
+        max_output_tokens=700,
     )
 
     return response.output_text.strip()
