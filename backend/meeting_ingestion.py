@@ -73,6 +73,7 @@ async def _embed_texts(texts: list[str], client_config: State) -> list[list[floa
                     f"{EMBEDDING_DIMENSIONS}. Check the deployment and Cosmos policy."
                 )
             all_vectors.append(vector)
+            
     return all_vectors
 
 async def _embed_and_upsert_documents(
