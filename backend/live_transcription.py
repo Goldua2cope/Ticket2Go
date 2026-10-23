@@ -6,6 +6,7 @@ import json
 from collections import deque
 from contextlib import suppress
 from urllib.parse import urlsplit, urlunsplit
+from starlette.datastructures import State
 
 import imageio_ffmpeg
 from fastapi import WebSocket, WebSocketDisconnect
@@ -70,20 +71,20 @@ async def start_decoder(mime_type: str):
     )
 
 
-async def stream_transcription(browser: WebSocket, mime_type: str, config: dict) -> str:
+async def stream_transcription(browser: WebSocket, mime_type: str, config: State):
     """Stream updates and return the full, ordered transcript after Stop."""
-    if not all(config.values()):
+    if not all(config):
         raise TranscriptionError(
             "Export AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and "
             "AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT (or AZURE_OPENAI_DEPLOYMENT), then restart Python."
         )
 
     async with connect(
-        realtime_url(config["endpoint"]),
-        additional_headers={"api-key": config["key"]},
+        realtime_url(config.azure_openai_endpoint),
+        additional_headers={"api-key": config.azure_openai_api_key},
         open_timeout=10, close_timeout=2, max_size=4 * 1024 * 1024,
     ) as azure:
-        await azure.send(json.dumps(session_update(config["deployment"])))
+        await azure.send(json.dumps(session_update(config.model_transcription)))
         async with asyncio.timeout(10):
             while True:
                 event = json.loads(await azure.recv())
@@ -216,7 +217,13 @@ async def stream_transcription(browser: WebSocket, mime_type: str, config: dict)
                 for task in done:
                     task.result()
                 if finish_task in done:
-                    return " ".join(text for text in completed_segments if text)
+                    return {
+                        "segments": [
+                            {"text": text}
+                            for text in completed_segments
+                            if text
+                        ]
+                    }
         finally:
             for task in tasks:
                 task.cancel()
