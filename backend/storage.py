@@ -1,52 +1,60 @@
 """Save a completed meeting transcript to Azure Blob Storage."""
 
 import asyncio
-import os
+import json
 from uuid import UUID
+from starlette.datastructures import State
 
 from azure.core.exceptions import AzureError, ResourceExistsError, ResourceNotFoundError
 from azure.storage.blob import ContentSettings
-from azure.storage.blob.aio import BlobServiceClient
 
 
 class TranscriptStorageError(Exception):
     """Storage failure that can be displayed without exposing credentials."""
 
 
-async def save_meeting_transcript(meeting_id: str, transcript: str) -> str:
+async def save_meeting_transcript(meeting_id: str, transcript: dict, config: State) -> str:
     """Upload UTF-8 text as <meeting_id>.txt and return the blob name."""
     meeting_id = str(UUID(meeting_id))
-    if not transcript.strip():
+
+    # Ensure the transcript contains at least one non-empty segment
+    segments = transcript.get("segments", [])
+    if not isinstance(segments, list) or not any(
+        isinstance(segment, dict)
+        and isinstance(segment.get("text"), str)
+        and segment["text"].strip()
+        for segment in segments
+    ):
         raise TranscriptStorageError(
             "No transcript text was produced, so no file was saved."
         )
 
-    connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "").strip()
-    container = os.getenv("AZURE_STORAGE_CONTAINER_NAME", "").strip()
-    if not connection_string or not container:
+    # Serialize the transcript dictionary to UTF-8 JSON.
+    try:
+        json_content = json.dumps(
+            transcript,
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
         raise TranscriptStorageError(
-            "Transcript not saved. Export AZURE_STORAGE_CONNECTION_STRING and "
-            "AZURE_STORAGE_CONTAINER_NAME, then restart Python. Your text is still on this page."
-        )
+            "The transcript could not be converted to JSON."
+        ) from None
 
     blob_name = f"{meeting_id}.txt"
+
     try:
         async with asyncio.timeout(20):
-            async with BlobServiceClient.from_connection_string(
-                connection_string,
-                retry_total=0,
-                connection_timeout=10,
-                read_timeout=10,
-            ) as service:
-                blob = service.get_blob_client(container=container, blob=blob_name)
-                await blob.upload_blob(
-                    transcript.encode("utf-8"),
-                    overwrite=False,
-                    content_settings=ContentSettings(
-                        content_type="text/plain; charset=utf-8"
-                    ),
-                    metadata={"meeting_id": meeting_id},
-                )
+            blob = config.container.get_blob_client(blob_name)
+
+            await blob.upload_blob(
+                json_content,
+                overwrite=False,
+                content_settings=ContentSettings(
+                    content_type="application/json; charset=utf-8"
+                ),
+                metadata={"meeting_id": meeting_id},
+            )
     except ResourceExistsError:
         raise TranscriptStorageError(
             f"Meeting {meeting_id} already exists in storage. It was not overwritten."
@@ -60,4 +68,5 @@ async def save_meeting_transcript(meeting_id: str, transcript: str) -> str:
             f"Could not confirm that meeting {meeting_id} was saved. Check storage access "
             "and connectivity. Your transcript is still on this page."
         ) from None
+    
     return blob_name

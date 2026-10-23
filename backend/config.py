@@ -17,11 +17,12 @@ from azure.storage.blob.aio import BlobServiceClient
 logger = logging.getLogger(__name__)
 
 # Configuration Variables
-AZURE_OPENAI_ENDPOINT = "https://fall26-ai.services.ai.azure.com"
+AZURE_OPENAI_ENDPOINT = "https://fall26-ai.services.ai.azure.com/"
 AZURE_STORAGE_CONTAINER_NAME = "ticket2go-storage-container"
 VAULT_URL = "https://ticket2go-keyvault.vault.azure.net/"
 POSTGRES_DB = "ticket2go-psql-db"
 COSMOS_DB = "ticket2go-cosmos-db"
+COSMOS_CONTAINER = "knowledge_container"
 
 # Mapping {variable name : secret in Key vault}
 VAULT_SECRETS = {
@@ -68,6 +69,8 @@ async def lifespan(app: FastAPI):
         cosmos_client = CosmosClient.from_connection_string(secrets["cosmos_con_str"])
         stack.push_async_callback(cosmos_client.close)
 
+        cosmos_container_client = cosmos_client.get_database_client(COSMOS_DB).get_container_client(COSMOS_CONTAINER)
+
         postgres_client = await asyncpg.create_pool(
             host=secrets["psql_host"],
             user=secrets["psql_admin"],
@@ -84,18 +87,25 @@ async def lifespan(app: FastAPI):
 
         container_client = storage_client.get_container_client(AZURE_STORAGE_CONTAINER_NAME)
 
-        ai_client = AsyncOpenAI(api_key=secrets["api_key"])
+        ai_client = AsyncOpenAI(
+                base_url="https://fall26-ai.services.ai.azure.com/openai/v1/",
+                api_key=secrets["api_key"],
+            )
         stack.push_async_callback(ai_client.close)
 
         # ---- Expose Clients to application ----
         app.state.credential = azure_credential
         app.state.key_vault = key_vault_client
         app.state.cosmos = cosmos_client
+        app.state.cosmos_container = cosmos_container_client
         app.state.postgres = postgres_client
         app.state.container = container_client
-        app.state.openai = ai_client
-        app.state.model_embedding = "gpt-live-transcribe"
+        app.state.ai_client = ai_client
+        app.state.model_transcription = "gpt-live-transcribe"
         app.state.model_response = "gpt-5.4"
+        app.state.model_embedding = "text-embedding-3-small"
+        app.state.azure_openai_endpoint = AZURE_OPENAI_ENDPOINT
+        app.state.azure_openai_api_key = secrets["api_key"]
 
         yield
         # AsyncStackExit will close all connections automatically
