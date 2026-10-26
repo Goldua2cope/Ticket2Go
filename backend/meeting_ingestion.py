@@ -135,12 +135,30 @@ async def ingest_meeting_transcript(
     client_config: State
 ) -> dict[str, Any]:
     
-    transcript = str(transcription["segment"][0]["text"])
-
     """Chunk, embed, and store a completed meeting transcript."""
+
+    if not isinstance(transcription, dict):
+        raise TypeError("transcription must be a dictionary.")
+
+    segments = transcription.get("segments")
+
+    if not isinstance(segments, list):
+        raise ValueError("transcription must contain a 'segments' list.")
+
+    transcript = " ".join(
+        segment["text"].strip()
+        for segment in segments
+        if (
+            isinstance(segment, dict)
+            and isinstance(segment.get("text"), str)
+            and segment["text"].strip()
+        )
+    ).strip()
+
     if not meeting_id.strip():
         raise ValueError("meeting_id must not be empty.")
-    if not transcript.strip():
+
+    if not transcript:
         raise ValueError("transcript must not be empty.")
 
     chunks = chunk_text(transcript)

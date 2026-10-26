@@ -5,11 +5,11 @@ First run:
     -> imports every issue visible in JIRA_PROJECT_KEY.
 
 Later runs:
-    python jira_sync.py
+    python -m backend.jira_sync
     -> fetches issues updated since the last successful sync, with an overlap window.
 
 Force a full project scan:
-    python jira_sync.py --full
+    python -m backend.jira_sync.py --full
 
 This script only writes to Cosmos DB. It does not create or modify Jira issues.
 
@@ -28,27 +28,31 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from starlette.datastructures import State
 
-import requests
+#import requests
 from dotenv import load_dotenv
-from requests.adapters import HTTPAdapter
-from requests.auth import HTTPBasicAuth
-from urllib3.util.retry import Retry
+#from requests.adapters import HTTPAdapter
+#from requests.auth import HTTPBasicAuth
+#from urllib3.util.retry import Retry
+import asyncio
+import httpx
 from azure.cosmos.exceptions import CosmosResourceNotFoundError
+from fastapi import FastAPI
+from backend.config import lifespan
 
 # Load this folder's .env before importing the shared helper module, which reads
 # Cosmos and embedding settings when it is imported.
 load_dotenv(Path(__file__).resolve().with_name(".env"))
 
-from meeting_ingestion import (  # noqa: E402
-    EMBEDDING_DEPLOYMENT,
+from backend.meeting_ingestion import (  # noqa: E402
     EMBEDDING_DIMENSIONS,
-    _cosmos_container,
     _embed_texts,
 )
 
 DEFAULT_MAX_EMBED_CHARS = 12000
 COSMOS_VECTOR_FIELD = "embedding"
+#EMBEDDING_DEPLOYMENT = "text-embedding-3-small"
 
 
 JIRA_FIELDS = [
@@ -74,22 +78,27 @@ DEFAULT_TIMEOUT_SECONDS = 60
 DEFAULT_MAX_EMBED_CHARS = 12000
 
 
-def _required_env(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if not value:
-        raise ValueError(f"Missing required environment variable: {name}")
-    return value
+def _required_state_value(state: State, attribute: str) -> str:
+    """Read and validate a required value from FastAPI application state."""
+    value = getattr(state, attribute, "")
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"Missing required application configuration: {attribute}"
+        )
+
+    return value.strip()
 
 
-def _load_config() -> dict[str, Any]:
-    """Read and validate Jira connection and sync settings from .env."""
-    base_url = _required_env("JIRA_BASE_URL").rstrip("/")
-    email = _required_env("JIRA_EMAIL")
-    api_token = _required_env("JIRA_API_TOKEN")
-    project_key = _required_env("JIRA_PROJECT_KEY")
+def _load_config(state: State) -> dict[str, Any]:
+    """Read Jira connection settings from app.state and sync options from env."""
 
-    # Jira project keys are normally alphanumeric/underscore. Validate rather
-    # than interpolate arbitrary .env content into JQL.
+    base_url = _required_state_value(state, "jira_base_url").rstrip("/")
+    email = _required_state_value(state, "jira_email")
+    api_token = _required_state_value(state, "jira_api_token")
+    project_key = _required_state_value(state, "jira_project_key")
+
+    # Validate the Jira project key before using it in JQL.
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", project_key):
         raise ValueError(
             "JIRA_PROJECT_KEY should be a Jira project key containing letters, "
@@ -110,7 +119,8 @@ def _load_config() -> dict[str, Any]:
     except ValueError as exc:
         raise ValueError(
             "JIRA_SYNC_OVERLAP_MINUTES, JIRA_PAGE_SIZE, "
-            "JIRA_REQUEST_TIMEOUT_SECONDS, and JIRA_MAX_EMBED_CHARS must be integers."
+            "JIRA_REQUEST_TIMEOUT_SECONDS, and JIRA_MAX_EMBED_CHARS "
+            "must be integers."
         ) from exc
 
     if overlap_minutes < 0:
@@ -123,16 +133,14 @@ def _load_config() -> dict[str, Any]:
         raise ValueError("JIRA_MAX_EMBED_CHARS must be at least 100 characters.")
 
     timezone_name = os.getenv("JIRA_TIMEZONE", "Europe/Stockholm").strip()
+
     try:
         jira_timezone = ZoneInfo(timezone_name)
     except ZoneInfoNotFoundError:
-        # Some Windows Python installations do not have the IANA time-zone
-        # database installed. Fall back to the computer's configured time zone.
         local_timezone = datetime.now().astimezone().tzinfo or timezone.utc
         print(
             f"Warning: time zone '{timezone_name}' was not available. "
-            f"Using the computer's local time zone ({local_timezone}). "
-            "Set JIRA_TIMEZONE to match the Jira account's configured time zone."
+            f"Using the computer's local time zone ({local_timezone})."
         )
         jira_timezone = local_timezone
 
@@ -147,35 +155,57 @@ def _load_config() -> dict[str, Any]:
         "max_embed_chars": max_embed_chars,
         "jira_timezone": jira_timezone,
         "timezone_name": timezone_name,
+        "embedding_model": _required_state_value(state, "model_embedding"),
     }
 
 
-def _make_jira_session(config: dict[str, Any]) -> requests.Session:
-    """Create an authenticated Jira session with retries for transient failures."""
-    retry = Retry(
-        total=5,
-        connect=5,
-        read=5,
-        status=5,
-        backoff_factor=0.6,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset({"GET", "POST"}),
-        respect_retry_after_header=True,
-        raise_on_status=False,
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-
-    session = requests.Session()
-    session.auth = HTTPBasicAuth(config["email"], config["api_token"])
-    session.headers.update(
-        {
+def _make_jira_client(config: dict[str, Any]) -> httpx.AsyncClient:
+    """Create an asynchronous, authenticated Jira HTTP client."""
+    return httpx.AsyncClient(
+        auth=(config["email"], config["api_token"]),
+        headers={
             "Accept": "application/json",
             "Content-Type": "application/json",
-        }
+        },
+        timeout=httpx.Timeout(config["timeout_seconds"]),
     )
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
+
+
+async def _post_with_retries(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: dict[str, Any],
+    max_attempts: int = 5,
+) -> httpx.Response:
+    """Retry transient Jira API failures without blocking the event loop."""
+    retryable_statuses = {429, 500, 502, 503, 504}
+
+    for attempt in range(max_attempts):
+        try:
+            response = await client.post(url, json=payload)
+        except httpx.RequestError:
+            if attempt == max_attempts - 1:
+                raise
+
+            await asyncio.sleep(0.6 * (2 ** attempt))
+            continue
+
+        if (
+            response.status_code not in retryable_statuses
+            or attempt == max_attempts - 1
+        ):
+            return response
+
+        retry_after = response.headers.get("Retry-After")
+
+        try:
+            delay = float(retry_after) if retry_after else 0.6 * (2 ** attempt)
+        except ValueError:
+            delay = 0.6 * (2 ** attempt)
+
+        await asyncio.sleep(min(max(delay, 0), 30))
+
+    raise RuntimeError("Jira request retries were exhausted.")
 
 
 def _jql_timestamp(value: datetime, jira_timezone: Any) -> str:
@@ -185,34 +215,30 @@ def _jql_timestamp(value: datetime, jira_timezone: Any) -> str:
     return local_value.strftime("%Y-%m-%d %H:%M")
 
 
-def _fetch_all_issues(
-    session: requests.Session,
-    config: dict[str, Any],
-    jql: str,
-) -> tuple[list[dict[str, Any]], int]:
-    """Fetch all pages from Jira's current enhanced JQL search endpoint."""
+async def _fetch_all_issues(client: httpx.AsyncClient, config: dict[str, Any],
+                            jql: str,) -> tuple[list[dict[str, Any]], int]:
+    
+    """Fetch all pages from Jira's enhanced JQL search endpoint."""
     url = f"{config['base_url']}/rest/api/3/search/jql"
+
     payload: dict[str, Any] = {
         "jql": jql,
         "fields": JIRA_FIELDS,
         "maxResults": config["page_size"],
     }
+
     all_issues: list[dict[str, Any]] = []
     seen_tokens: set[str] = set()
     page_count = 0
 
     while True:
-        response = session.post(
-            url,
-            json=payload,
-            timeout=config["timeout_seconds"],
-        )
-        if not response.ok:
-            # Include a limited response body to make Jira validation/auth errors
-            # diagnosable without printing the API token.
-            raise requests.HTTPError(
+        response = await _post_with_retries(client, url, payload,)
+
+        if not response.is_success:
+            raise httpx.HTTPStatusError(
                 f"Jira search failed with HTTP {response.status_code}: "
                 f"{response.text[:1500]}",
+                request=response.request,
                 response=response,
             )
 
@@ -222,28 +248,36 @@ def _fetch_all_issues(
             raise RuntimeError("Jira search returned a non-JSON response.") from exc
 
         issues = body.get("issues")
+
         if not isinstance(issues, list):
             raise RuntimeError("Jira response did not contain an 'issues' list.")
 
         page_count += 1
         all_issues.extend(issues)
-        print(f"  Page {page_count}: received {len(issues)} issues")
+
+        print(
+            f"  Page {page_count}: received {len(issues)} issues"
+        )
 
         if body.get("isLast") is True:
             break
 
         next_token = body.get("nextPageToken")
+
         if not next_token:
-            # isLast=false but no token would otherwise silently truncate an import.
             if body.get("isLast") is False:
                 raise RuntimeError(
-                    "Jira reported more results but did not return nextPageToken. "
-                    "Stopping so the sync checkpoint is not advanced incorrectly."
+                    "Jira reported more results but did not return "
+                    "nextPageToken. Stopping pagination."
                 )
             break
 
         if next_token in seen_tokens:
-            raise RuntimeError("Jira returned a repeated nextPageToken; stopping pagination.")
+            raise RuntimeError(
+                "Jira returned a repeated nextPageToken; "
+                "stopping pagination."
+            )
+
         seen_tokens.add(next_token)
         payload["nextPageToken"] = next_token
 
@@ -345,6 +379,7 @@ def _transform_issue(
     base_url: str,
     fallback_project_key: str,
     max_embed_chars: int,
+    embedding_model: str,
 ) -> dict[str, Any]:
     """Transform Jira's raw API issue into the app's Cosmos document shape."""
     jira_id = str(issue.get("id") or "").strip()
@@ -450,23 +485,23 @@ def _transform_issue(
         "text": text_for_retrieval,
         "embedding_text": embedding_text,
         "content_hash": content_hash,
-        "embedding_model": EMBEDDING_DEPLOYMENT,
+        "embedding_model": embedding_model,
         "embedding_dimensions": EMBEDDING_DIMENSIONS,
     }
 
 
-def _read_checkpoint(container: Any, project_key: str) -> dict[str, Any] | None:
+async def _read_checkpoint(container: Any, project_key: str) -> dict[str, Any] | None:
     """Read the incremental-sync checkpoint stored in the same Cosmos container."""
     checkpoint_id = f"sync:jira:{project_key}"
     try:
-        return container.read_item(item=checkpoint_id, partition_key=checkpoint_id)
+        return await container.read_item(item=checkpoint_id, partition_key=checkpoint_id)
     except CosmosResourceNotFoundError:
         return None
 
 
-def _read_existing_issue(container: Any, document_id: str) -> dict[str, Any] | None:
+async def _read_existing_issue(container: Any, document_id: str) -> dict[str, Any] | None:
     try:
-        return container.read_item(item=document_id, partition_key=document_id)
+        return await container.read_item(item=document_id, partition_key=document_id)
     except CosmosResourceNotFoundError:
         return None
 
@@ -481,7 +516,7 @@ def _deduplicate_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(unique.values())
 
 
-def sync_jira_to_cosmos(*, force_full: bool = False) -> dict[str, Any]:
+async def sync_jira_to_cosmos(state: State, *, force_full: bool = False) -> dict[str, Any]:
     """Run one Jira sync.
 
     On first run, fetch the whole configured project. On later runs, fetch issues
@@ -489,17 +524,22 @@ def sync_jira_to_cosmos(*, force_full: bool = False) -> dict[str, Any]:
     checkpoint advances only after every issue has been transformed, embedded if
     needed, and upserted successfully.
     """
-    config = _load_config()
+    config = _load_config(state)
     project_key = config["project_key"]
     sync_started = datetime.now(timezone.utc)
     checkpoint_id = f"sync:jira:{project_key}"
-    session = _make_jira_session(config)
-    cosmos_client = None
+    #client = _make_jira_client(config)
+    #cosmos_client = None
+    client: httpx.AsyncClient | None = None
 
     try:
-        cosmos_client, container = _cosmos_container()
+        client = _make_jira_client(config)
+        #cosmos_client, container = _cosmos_container()
+
+        # Reuse the Cosmos container initialized by config.py.
+        container = state.cosmos_container
         vector_field = COSMOS_VECTOR_FIELD
-        checkpoint = _read_checkpoint(container, project_key)
+        checkpoint = await _read_checkpoint(container, project_key)
 
         full_sync = force_full or checkpoint is None
         if full_sync:
@@ -535,7 +575,7 @@ def sync_jira_to_cosmos(*, force_full: bool = False) -> dict[str, Any]:
                 f"including a {config['overlap_minutes']}-minute overlap)."
             )
 
-        raw_issues, page_count = _fetch_all_issues(session, config, jql)
+        raw_issues, page_count = await _fetch_all_issues(client, config, jql)
         issues = _deduplicate_issues(raw_issues)
         print(f"Fetched {len(raw_issues)} issue records; {len(issues)} unique issues to process.")
 
@@ -547,15 +587,15 @@ def sync_jira_to_cosmos(*, force_full: bool = False) -> dict[str, Any]:
 
         for issue in issues:
             document = _transform_issue(
-                issue, config["base_url"], project_key, config["max_embed_chars"]
+                issue, config["base_url"], project_key, config["max_embed_chars"], config["embedding_model"]
             )
-            existing = _read_existing_issue(container, document["id"])
+            existing = await _read_existing_issue(container, document["id"])
 
             existing_vector = existing.get(vector_field) if existing else None
             can_reuse_vector = (
                 existing is not None
                 and existing.get("content_hash") == document["content_hash"]
-                and existing.get("embedding_model") == EMBEDDING_DEPLOYMENT
+                and existing.get("embedding_model") == config["embedding_model"]
                 and isinstance(existing_vector, list)
                 and len(existing_vector) == EMBEDDING_DIMENSIONS
             )
@@ -574,9 +614,9 @@ def sync_jira_to_cosmos(*, force_full: bool = False) -> dict[str, Any]:
         if embedding_queue:
             print(
                 f"Generating {len(embedding_queue)} embeddings with deployment "
-                f"'{EMBEDDING_DEPLOYMENT}'..."
+                f"'{config["embedding_model"]}'..."
             )
-            vectors = _embed_texts([document["embedding_text"] for document in embedding_queue])
+            vectors = await _embed_texts([document["embedding_text"] for document in embedding_queue], state)
             if len(vectors) != len(embedding_queue):
                 raise RuntimeError(
                     f"Embedding helper returned {len(vectors)} vectors for "
@@ -594,7 +634,7 @@ def sync_jira_to_cosmos(*, force_full: bool = False) -> dict[str, Any]:
         # If a later write fails, the checkpoint is not advanced; retrying is safe.
         for document in transformed:
             document["synced_at_utc"] = sync_started.isoformat()
-            container.upsert_item(document)
+            await container.upsert_item(document)
 
         # Use the run's start time as the watermark. Any issues changed during the
         # current scan will be included on the next run (also protected by overlap).
@@ -611,7 +651,7 @@ def sync_jira_to_cosmos(*, force_full: bool = False) -> dict[str, Any]:
             "last_run_pages": page_count,
             "updated_at_utc": sync_completed.isoformat(),
         }
-        container.upsert_item(new_checkpoint)
+        await container.upsert_item(new_checkpoint)
 
         result = {
             "project_key": project_key,
@@ -625,7 +665,7 @@ def sync_jira_to_cosmos(*, force_full: bool = False) -> dict[str, Any]:
             "embeddings_generated": len(embedding_queue),
             "documents_upserted": len(transformed),
             "vector_field_used": f"/{vector_field}",
-            "embedding_model": EMBEDDING_DEPLOYMENT,
+            "embedding_model": config["embedding_model"],
             "embedding_dimensions": EMBEDDING_DIMENSIONS,
             "checkpoint_id": checkpoint_id,
             "sync_watermark_utc": sync_started.isoformat(),
@@ -637,11 +677,40 @@ def sync_jira_to_cosmos(*, force_full: bool = False) -> dict[str, Any]:
         return result
 
     finally:
-        session.close()
-        if cosmos_client is not None:
-            cosmos_client.close()
+        if client is not None:
+            await client.aclose()
 
 
+async def _run_cli(force_full: bool) -> None:
+    """Initialize shared application resources and run Jira synchronization."""
+    app = FastAPI()
+
+    async with lifespan(app):
+        await sync_jira_to_cosmos(
+            app.state,
+            force_full=force_full,
+        )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Import or incrementally sync Jira issues to Cosmos DB."
+    )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Fetch the entire configured Jira project instead of using the checkpoint.",
+    )
+    args = parser.parse_args()
+
+    asyncio.run(_run_cli(force_full=args.full))
+
+
+if __name__ == "__main__":
+    main()
+
+
+'''
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Import or incrementally sync Jira issues to Cosmos DB."
@@ -657,3 +726,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+'''

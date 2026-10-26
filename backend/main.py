@@ -23,12 +23,56 @@ from backend.storage import (
     save_meeting_transcript,
 )
 from backend.config import lifespan, check_cosmos, check_postgres, check_storage_container, run_health_check
-from backend.meeting_ingestion import ingest_meeting_transcript
+from backend.meeting_ingestion import ingest_meeting_transcript, ingest_meeting_summary
+from backend.jira_sync import sync_jira_to_cosmos
 
 logger = logging.getLogger("uvicorn.error")
 
 # Initialize Application
 app = FastAPI(lifespan=lifespan)
+
+async def _run_jira_sync() -> None:
+    """Run Jira synchronization without interrupting the meeting."""
+    logger.info("Starting background Jira synchronization.")
+
+    try:
+        result = await sync_jira_to_cosmos(app.state)
+
+        logger.info(
+            "Jira sync completed: mode=%s, issues=%s, upserted=%s, "
+            "embeddings_generated=%s, vectors_reused=%s",
+            result.get("mode"),
+            result.get("unique_issues_processed"),
+            result.get("documents_upserted"),
+            result.get("embeddings_generated"),
+            result.get("vectors_reused"),
+        )
+
+    except asyncio.CancelledError:
+        logger.warning("Background Jira synchronization was cancelled.")
+        raise
+
+    except Exception:
+        logger.exception(
+            "Background Jira synchronization failed. "
+            "Meeting transcription will continue."
+        )
+
+
+def _schedule_jira_sync() -> None:
+    """Start Jira sync unless a sync is already running."""
+    current_task = getattr(app.state, "jira_sync_task", None)
+
+    if current_task is not None and not current_task.done():
+        logger.info(
+            "Jira synchronization is already running; skipping duplicate trigger."
+        )
+        return
+
+    app.state.jira_sync_task = asyncio.create_task(
+        _run_jira_sync(),
+        name="jira-sync",
+    )
 
 @app.get("/health")
 async def health():
@@ -96,9 +140,14 @@ async def transcribe(websocket: WebSocket):
         if not isinstance(mime_type, str) or not mime_type.startswith("audio/"):
             raise TranscriptionError("Start must include an audio MIME type.")
 
-        # Create a unique ID and stream audio to the transcription service.
-        logger.info("Connecting audio stream to Foundry transcription")
+        # Create a unique ID and start Jira sync in the background.
         meeting_id = str(uuid4())
+        logger.info("Meeting %s is starting.", meeting_id)
+
+        _schedule_jira_sync()
+
+        # Start audio transcription without waiting for Jira synchronization.
+        logger.info("Connecting audio stream to Foundry transcription")
         transcript = await stream_transcription(websocket, mime_type, app.state)
 
         # Notify the client that the completed transcript is being saved.
@@ -106,6 +155,27 @@ async def transcribe(websocket: WebSocket):
 
         # Persist the transcript and retrieve its storage identifier.
         blob_name = await save_meeting_transcript(meeting_id, transcript, app.state)
+
+        # Index the completed transcript in Cosmos DB.
+        try:
+            ingestion_result = await ingest_meeting_transcript(
+                meeting_id=meeting_id,
+                transcription=transcript,
+                client_config=app.state,
+            )
+
+            logger.info(
+                "Meeting transcript indexed in Cosmos DB: meeting_id=%s, chunks=%s",
+                meeting_id,
+                ingestion_result["transcript_chunks_indexed"],
+            )
+
+        except Exception:
+            # Keep the saved transcript and allow summarization to continue.
+            logger.exception(
+                "Transcript ingestion into Cosmos DB failed for meeting_id=%s",
+                meeting_id,
+            )
 
         # Generate from the complete saved transcript over the same connection.
         await websocket.send_json({
@@ -127,6 +197,26 @@ async def transcribe(websocket: WebSocket):
                 "message": "Your transcript was saved, but summary generation failed. Your transcript is still on this page.",
             })
             return
+
+        # Index the summary in Cosmos DB.
+        try:
+            summary_result = await ingest_meeting_summary(
+                meeting_id=meeting_id,
+                summary=summary,
+                client_config=app.state,
+            )
+
+            logger.info(
+                "Meeting summary ingestion completed: meeting_id=%s, indexed=%s",
+                meeting_id,
+                summary_result["summary_indexed"],
+            )
+
+        except Exception:
+            logger.exception(
+                "Summary ingestion into Cosmos DB failed for meeting_id=%s",
+                meeting_id,
+            )
 
         # Completion now includes the generated summary.
         await websocket.send_json({
