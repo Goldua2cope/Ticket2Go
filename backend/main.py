@@ -4,7 +4,9 @@ import asyncio
 import json
 import logging
 from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 import uvicorn
 from fastapi.staticfiles import StaticFiles
@@ -18,11 +20,22 @@ from websockets.exceptions import InvalidStatus
 
 from backend.live_transcription import TranscriptionError, stream_transcription
 from backend.summarisation import summarize
+from backend.postgres.meetings import (
+    MeetingStorageError,
+    create_meeting,
+    update_meeting,
+)
 from backend.storage import (
     TranscriptStorageError,
     save_meeting_transcript,
 )
-from backend.config import lifespan, check_cosmos, check_postgres, check_storage_container, run_health_check
+from backend.config import (
+    lifespan,
+    check_cosmos,
+    check_postgres,
+    check_storage_container,
+    run_health_check,
+)
 from backend.meeting_ingestion import ingest_meeting_transcript, ingest_meeting_summary
 from backend.jira_sync import sync_jira_to_cosmos
 
@@ -30,6 +43,7 @@ logger = logging.getLogger("uvicorn.error")
 
 # Initialize Application
 app = FastAPI(lifespan=lifespan)
+
 
 async def _run_jira_sync() -> None:
     """Run Jira synchronization without interrupting the meeting."""
@@ -74,6 +88,7 @@ def _schedule_jira_sync() -> None:
         name="jira-sync",
     )
 
+
 @app.get("/health")
 async def health():
     """
@@ -82,15 +97,14 @@ async def health():
     check_list = {
         "postgres": check_postgres,
         "cosmos": check_cosmos,
-        "storage_container": check_storage_container
+        "storage_container": check_storage_container,
     }
 
-    results = dict(await asyncio.gather(
-        *(
-            run_health_check(app, name, check)
-            for name, check in check_list.items()
+    results = dict(
+        await asyncio.gather(
+            *(run_health_check(app, name, check) for name, check in check_list.items())
         )
-    ))
+    )
 
     healthy = all(results.values())
 
@@ -99,8 +113,9 @@ async def health():
         content={
             "status": "ready" if healthy else "not_ready",
             "checks": results,
-        }
+        },
     )
+
 
 @app.websocket("/ws/transcribe")
 async def transcribe(websocket: WebSocket):
@@ -113,13 +128,14 @@ async def transcribe(websocket: WebSocket):
     Ensures the WebSocket is closed when the session ends.
     """
     await websocket.accept()
+    meeting_id = None
+    meeting_created = False
+    meeting_completed = False
+    transcript_blob_uri = None
 
     try:
         # Wait up to 15 seconds for the initial start message.
-        event = await asyncio.wait_for(
-            websocket.receive(),
-            timeout=15
-        )
+        event = await asyncio.wait_for(websocket.receive(), timeout=15)
 
         # Exit if the client disconnects before starting.
         if event["type"] == "websocket.disconnect":
@@ -142,6 +158,8 @@ async def transcribe(websocket: WebSocket):
 
         # Create a unique ID and start Jira sync in the background.
         meeting_id = str(uuid4())
+        await create_meeting(meeting_id, datetime.now(timezone.utc), app.state)
+        meeting_created = True
         logger.info("Meeting %s is starting.", meeting_id)
 
         _schedule_jira_sync()
@@ -152,9 +170,14 @@ async def transcribe(websocket: WebSocket):
 
         # Notify the client that the completed transcript is being saved.
         await websocket.send_json({"type": "saving", "meeting_id": meeting_id})
+        await update_meeting(meeting_id, "processing", app.state)
 
         # Persist the transcript and retrieve its storage identifier.
         blob_name = await save_meeting_transcript(meeting_id, transcript, app.state)
+        # Keep the blob location, without storing SAS tokens or URL fragments.
+        blob_url = urlsplit(app.state.container.get_blob_client(blob_name).url)
+        transcript_blob_uri = urlunsplit(blob_url._replace(query="", fragment=""))
+        await update_meeting(meeting_id, "processing", app.state, transcript_blob_uri)
 
         # Index the completed transcript in Cosmos DB.
         try:
@@ -178,11 +201,13 @@ async def transcribe(websocket: WebSocket):
             )
 
         # Generate from the complete saved transcript over the same connection.
-        await websocket.send_json({
-            "type": "summarizing",
-            "meeting_id": meeting_id,
-            "blob_name": blob_name,
-        })
+        await websocket.send_json(
+            {
+                "type": "summarizing",
+                "meeting_id": meeting_id,
+                "blob_name": blob_name,
+            }
+        )
         try:
             async with asyncio.timeout(60):
                 summary = await summarize(
@@ -192,10 +217,12 @@ async def transcribe(websocket: WebSocket):
                 raise ValueError("Empty summary")
         except Exception as exc:
             logger.warning("Summary failed (%s)", type(exc).__name__)
-            await websocket.send_json({
-                "type": "error",
-                "message": "Your transcript was saved, but summary generation failed. Your transcript is still on this page.",
-            })
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": "Your transcript was saved, but summary generation failed. Your transcript is still on this page.",
+                }
+            )
             return
 
         # Index the summary in Cosmos DB.
@@ -218,13 +245,18 @@ async def transcribe(websocket: WebSocket):
                 meeting_id,
             )
 
+        await update_meeting(meeting_id, "completed", app.state)
+        meeting_completed = True
+
         # Completion now includes the generated summary.
-        await websocket.send_json({
-            "type": "done",
-            "meeting_id": meeting_id,
-            "blob_name": blob_name,
-            "summary": summary,
-        })
+        await websocket.send_json(
+            {
+                "type": "done",
+                "meeting_id": meeting_id,
+                "blob_name": blob_name,
+                "summary": summary,
+            }
+        )
         logger.info("Meeting %s saved", meeting_id)
 
     # Stop quietly when the client disconnects.
@@ -233,7 +265,9 @@ async def transcribe(websocket: WebSocket):
 
     except Exception as exc:
         # Return safe, user-friendly messages for expected errors.
-        if isinstance(exc, (TranscriptionError, TranscriptStorageError)):
+        if isinstance(
+            exc, (TranscriptionError, TranscriptStorageError, MeetingStorageError)
+        ):
             message = str(exc)
         elif isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
             message = "Timed out waiting for audio or Foundry. Please try again."
@@ -253,14 +287,23 @@ async def transcribe(websocket: WebSocket):
             await websocket.send_json({"type": "error", "message": message})
 
     finally:
+        # Retain the blob reference if a later step fails or the client disconnects.
+        if meeting_created and not meeting_completed:
+            try:
+                await update_meeting(
+                    meeting_id, "failed", app.state, transcript_blob_uri
+                )
+            except MeetingStorageError:
+                logger.warning("Could not mark meeting %s as failed", meeting_id)
+
         # Close the WebSocket regardless of success or failure.
         with suppress(RuntimeError, WebSocketDisconnect, OSError):
             await websocket.close()
 
+
 # Backend serves Frontend
-frontend_dist = (Path(__file__).resolve().parent.parent / "frontend" / "dist")
+frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 app.mount("/", StaticFiles(directory=frontend_dist, html=True))
 
 if __name__ == "__main__":
     uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=True)
-
