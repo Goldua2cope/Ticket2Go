@@ -24,6 +24,11 @@ POSTGRES_DB = "ticket2go-psql-db"
 COSMOS_DB = "ticket2go-cosmos-db"
 COSMOS_CONTAINER = "knowledge_container"
 
+# Jira Cloud
+JIRA_BASE_URL="https://ticket-to-go.atlassian.net"
+JIRA_EMAIL="robin.stjarne@salt.dev"
+JIRA_PROJECT_KEY="SCRUM"
+
 # Mapping {variable name : secret in Key vault}
 VAULT_SECRETS = {
     "api_key" : "azure-openai-api-key",
@@ -31,7 +36,8 @@ VAULT_SECRETS = {
     "cosmos_con_str" : "cosmos-connection-string",
     "psql_admin" : "psql-admin",
     "psql_password" : "psql-password",
-    "psql_host" : "psql-host"
+    "psql_host" : "psql-host",
+    "jira_api_token": "jira-api-token",
 }
 
 async def get_secret(client, secret_name):
@@ -106,6 +112,10 @@ async def lifespan(app: FastAPI):
         app.state.model_embedding = "text-embedding-3-small"
         app.state.azure_openai_endpoint = AZURE_OPENAI_ENDPOINT
         app.state.azure_openai_api_key = secrets["api_key"]
+        app.state.jira_base_url = JIRA_BASE_URL.rstrip("/")
+        app.state.jira_email = JIRA_EMAIL
+        app.state.jira_project_key = JIRA_PROJECT_KEY
+        app.state.jira_api_token = secrets["jira_api_token"]
 
         yield
         # AsyncStackExit will close all connections automatically
