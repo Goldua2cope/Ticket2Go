@@ -75,6 +75,7 @@ JIRA_FIELDS = (
 )
 
 
+
 def is_resolved_status(status: str | None) -> bool:
     return (status or "").strip().casefold() in RESOLVED_STATUS_NAMES
 

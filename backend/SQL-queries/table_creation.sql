@@ -101,13 +101,15 @@ CREATE TABLE IF NOT EXISTS problem_assessments (
     assessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE ticket_proposals
+    DROP CONSTRAINT IF EXISTS ticket_proposals_item_id_fkey,
+    ADD CONSTRAINT ticket_proposals_item_id_fkey
+        FOREIGN KEY (item_id) REFERENCES meeting_items(item_id) ON DELETE CASCADE;
+
+ALTER TABLE approval_audit
+    DROP CONSTRAINT IF EXISTS approval_audit_proposal_id_fkey,
+    ADD CONSTRAINT approval_audit_proposal_id_fkey
+        FOREIGN KEY (proposal_id) REFERENCES ticket_proposals(proposal_id) ON DELETE CASCADE;
+
 COMMIT;
 
-
-SELECT * FROM meeting_items;
-
-SELECT * FROM ticket_proposals;
-
-SELECT * FROM jira_issue_cache;
-
-SELECT * FROM problem_assessments;
