@@ -38,12 +38,14 @@ from backend.config import (
 )
 from backend.meeting_ingestion import ingest_meeting_transcript, ingest_meeting_summary
 from backend.jira_sync import sync_jira_to_cosmos
+from backend.ticket_suggestion.routes import router as suggestion_router
 from backend.ticket_suggestion.suggestion_service import suggest_tickets
 
 logger = logging.getLogger("uvicorn.error")
 
 # Initialize Application
 app = FastAPI(lifespan=lifespan)
+app.include_router(suggestion_router)
 
 
 async def _run_jira_sync() -> None:
@@ -139,10 +141,14 @@ def _print_ticket_suggestions(meeting_id: str, result: dict) -> None:
             description = proposal["description"].replace("\n", "\n                 ")
             lines.append(f"    Description: {description}")
         if proposal.get("related_meeting_ids"):
-            lines.append(f"    Earlier meetings: {len(proposal['related_meeting_ids'])}")
+            lines.append(
+                f"    Earlier meetings: {len(proposal['related_meeting_ids'])}"
+            )
         for evidence in proposal.get("evidence", [])[:3]:
             lines.append(f"    Evidence: \"{evidence.get('quote')}\"")
-        lines.append(f"    Proposal id: {proposal['proposal_id']} (review: {proposal['review_status']})")
+        lines.append(
+            f"    Proposal id: {proposal['proposal_id']} (review: {proposal['review_status']})"
+        )
         lines.append("")
 
     abstentions = result.get("abstentions", [])
@@ -151,14 +157,18 @@ def _print_ticket_suggestions(meeting_id: str, result: dict) -> None:
         lines.append("NO TICKET SUGGESTED")
         for abstention in abstentions:
             item_type = abstention.get("item_type") or "item"
-            lines.append(f"  - [{item_type}] {abstention.get('item_content') or abstention['item_id']}")
+            lines.append(
+                f"  - [{item_type}] {abstention.get('item_content') or abstention['item_id']}"
+            )
             lines.append(f"    Reason: {abstention['reason']}")
 
     lines.append("=" * 80)
     print("\n".join(lines), flush=True)
 
 
-async def _run_ticket_suggestions(meeting_id: str, transcript: dict, summary: str) -> None:
+async def _run_ticket_suggestions(
+    meeting_id: str, transcript: dict, summary: str
+) -> None:
     """Generate ticket suggestions without affecting the finished meeting."""
     logger.info("Starting ticket suggestions for meeting %s.", meeting_id)
 
@@ -183,7 +193,9 @@ async def _run_ticket_suggestions(meeting_id: str, transcript: dict, summary: st
     _print_ticket_suggestions(meeting_id, result)
 
 
-def _schedule_ticket_suggestions(meeting_id: str, transcript: dict, summary: str) -> None:
+def _schedule_ticket_suggestions(
+    meeting_id: str, transcript: dict, summary: str
+) -> None:
     """Start ticket suggestions in the background, keeping a reference to the task."""
     tasks = getattr(app.state, "ticket_suggestion_tasks", None)
     if tasks is None:
