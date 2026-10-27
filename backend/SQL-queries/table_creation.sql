@@ -19,6 +19,15 @@ CREATE TABLE IF NOT EXISTS meeting_items (
     content TEXT NOT NULL,
     evidence_refs TEXT
 );
+-- Alterations needed for compatibility with ticket_suggestion feature
+ALTER TABLE meeting_items DROP CONSTRAINT IF EXISTS meeting_items_item_type_check;
+ALTER TABLE meeting_items ADD CONSTRAINT meeting_items_item_type_check
+    CHECK (item_type IN ('action', 'decision', 'question', 'problem'));
+ALTER TABLE meeting_items ADD COLUMN IF NOT EXISTS severity TEXT
+    CHECK (severity IN ('low', 'medium', 'high', 'critical'));
+ALTER TABLE meeting_items ADD COLUMN IF NOT EXISTS related_problem_item_id UUID
+    REFERENCES meeting_items(item_id) ON DELETE SET NULL;
+
 
 CREATE TABLE IF NOT EXISTS ticket_proposals (
     proposal_id UUID PRIMARY KEY,
@@ -37,6 +46,14 @@ CREATE TABLE IF NOT EXISTS ticket_proposals (
     existing_issue_key TEXT,
     jira_issue_key TEXT
 );
+-- Alterations needed for compatibility with ticket_suggestion feature
+ALTER TABLE ticket_proposals ADD COLUMN IF NOT EXISTS proposal_type TEXT
+    CHECK (proposal_type IN ('create', 'update'));
+UPDATE ticket_proposals SET proposal_type = 'create' WHERE proposal_type IS NULL;  -- old test rows only
+ALTER TABLE ticket_proposals ALTER COLUMN proposal_type SET NOT NULL;
+ALTER TABLE ticket_proposals ADD COLUMN IF NOT EXISTS evidence JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE ticket_proposals ADD COLUMN IF NOT EXISTS rationale TEXT NOT NULL DEFAULT '';
+ALTER TABLE ticket_proposals ADD COLUMN IF NOT EXISTS related_meeting_ids UUID[] NOT NULL DEFAULT '{}';
 
 CREATE TABLE IF NOT EXISTS jira_issue_cache (
     issue_key TEXT PRIMARY KEY,
@@ -65,3 +82,8 @@ CREATE TABLE IF NOT EXISTS integration_sync_state (
 );
 
 COMMIT;
+
+
+SELECT * FROM meeting_items;
+
+SELECT * FROM ticket_proposals;
