@@ -56,28 +56,29 @@ async def _upsert_proposal(connection, proposal: TicketProposal):
         """
         INSERT INTO ticket_proposals (
             proposal_id, item_id, proposal_type, summary, description,
-            existing_issue_key, rationale, evidence, related_meeting_ids
+            jira_issue_key, rationale, evidence, related_meeting_ids
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::uuid[])
         ON CONFLICT (proposal_id) DO UPDATE SET
             proposal_type = EXCLUDED.proposal_type,
             summary = EXCLUDED.summary,
             description = EXCLUDED.description,
-            existing_issue_key = EXCLUDED.existing_issue_key,
+            jira_issue_key = EXCLUDED.jira_issue_key,
             rationale = EXCLUDED.rationale,
             evidence = EXCLUDED.evidence,
             related_meeting_ids = EXCLUDED.related_meeting_ids
         WHERE ticket_proposals.review_status = 'pending'
         RETURNING proposal_id, item_id, proposal_type, summary, description,
                   assignee_account_id, review_status, execution_status,
-                  existing_issue_key, jira_issue_key, rationale, evidence,
-                  related_meeting_ids
+                  jira_issue_key, rationale, evidence, related_meeting_ids
         """,
         proposal.proposal_id,
         proposal.item_id,
         proposal.proposal_type.value,
         proposal.summary,
         proposal.description,
+        # The model calls the update target existing_issue_key; the table stores it
+        # in jira_issue_key, which must exist in jira_issue_cache (or be NULL).
         proposal.existing_issue_key,
         proposal.rationale,
         evidence,
@@ -141,8 +142,7 @@ async def _append_revision(connection, revision: ProposalRevision, meeting_date:
           AND position($5 IN COALESCE(description, '')) = 0
         RETURNING proposal_id, item_id, proposal_type, summary, description,
                   assignee_account_id, review_status, execution_status,
-                  existing_issue_key, jira_issue_key, rationale, evidence,
-                  related_meeting_ids
+                  jira_issue_key, rationale, evidence, related_meeting_ids
         """,
         revision.proposal_id,
         note,
@@ -185,15 +185,10 @@ async def fetch_related_proposals(
         rows = await config.postgres.fetch(
             """
             SELECT p.proposal_id, p.item_id, p.proposal_type, p.summary, p.description,
-                   p.review_status, p.execution_status, p.existing_issue_key,
-                   p.jira_issue_key,
-                   EXISTS (
-                       SELECT 1 FROM approval_audit AS a
-                       WHERE a.proposal_id = p.proposal_id AND a.action = 'edited'
-                   ) AS edited_by_user
+                   p.review_status, p.execution_status, p.jira_issue_key,
+                   (p.review_status = 'edited') AS edited_by_user
             FROM ticket_proposals AS p
             WHERE p.item_id = ANY($1::uuid[])
-               OR p.existing_issue_key = ANY($2::text[])
                OR p.jira_issue_key = ANY($2::text[])
             """,
             item_ids,
