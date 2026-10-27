@@ -28,7 +28,9 @@ from .schemas import (
     ProblemAssessment,
     ProposalOutcome,
     ProposalOutput,
+    ProposalRevision,
     ProposalType,
+    RevisionSet,
     SourceDocument,
     TicketProposal,
 )
@@ -39,7 +41,7 @@ logger = logging.getLogger(__name__)
 PROPOSAL_NAMESPACE = UUID("5b0f7c1e-2d43-4a8e-9f61-3c7a8e2b9d14")
 MAX_SUMMARY_CHARS = 255
 # Starting values, not tuned results. Tune on a set of labelled meetings.
-DEFAULT_DUPLICATE_OVERLAP = 0.5        # word overlap with an open issue that counts as a duplicate
+DEFAULT_DUPLICATE_OVERLAP = 0.5        # word overlap with an open issue that triggers a duplicate warning
 DEFAULT_SIMILAR_ACTION_OVERLAP = 0.2   # word overlap that makes an earlier action worth showing
 DEFAULT_TIMEOUT_SECONDS = 120.0
 
@@ -50,6 +52,10 @@ suggestion. You never create, approve, or change tickets yourself.
 Choose one outcome for the focus item:
 - create: propose a new Jira issue.
 - update: propose a specific addition to one listed Jira issue.
+- revise: change one or more pending suggestions listed under
+  prior_ticket_proposals (drafts from earlier meetings the user hasn't
+  reviewed yet). Put their ids in revise_proposal_ids and the change in
+  new_information.
 - none: no suggestion, because the evidence is insufficient, the item is
   informational, or the work is already adequately tracked.
 
@@ -61,19 +67,36 @@ Decide by weighing these, in this order:
 5. Is the evidence sufficient to write a useful ticket?
 
 Rules:
+- A concrete action that someone committed to or was assigned (especially
+  with an owner or a deadline) warrants tracking. Work to prepare, define, or
+  design something for a later meeting is still real work.
 - Recurrence raises the importance of the decision; it does not by itself
   justify a ticket.
-- An open issue that already covers the work: choose update only if this
-  meeting adds something new (e.g. a confirmed reproduction step, a new
-  occurrence, an agreed acceptance criterion, a newly committed action).
-  Otherwise choose none.
+- An open issue that already covers the work: choose update if this meeting
+  adds something new. New information includes a newly committed action, a
+  new or changed owner, a deadline, a confirmed reproduction step, a new
+  occurrence, or an agreed acceptance criterion. Choose none only if the
+  meeting adds nothing the issue doesn't already say.
+- An earlier meeting that discussed the same topic without creating a ticket
+  is context, not a reason to skip a newly committed action.
 - A resolved issue whose problem has returned: create a new issue and name
   the earlier issue key in the description.
 - Never propose a duplicate of an open issue.
 - A prior rejection tells you the user didn't want that ticket at the time.
   It is not proof the problem doesn't exist. Suggest again only if there is
   new evidence, and say so in the rationale.
-- Decisions and questions are context. On their own they rarely need a ticket.
+- A decision that changes existing work (a new or moved deadline, a confirmed
+  or changed owner, a change of scope, approach, or acceptance criteria) is
+  not informational:
+  - the work has a pending suggestion: revise it (one decision may revise
+    several suggestions, e.g. a deadline moved for two tasks);
+  - the work has an approved suggestion or a Jira issue: update that issue;
+  - the work is not tracked anywhere yet: create a ticket that includes the
+    original work and the change.
+- A decision that defines new work: create. A purely informational decision: none.
+- Prefer revising a matching pending suggestion over creating a second
+  suggestion for the same work. Approved or rejected suggestions cannot be revised.
+- Questions are context. On their own they rarely need a ticket.
 - If the focus is an action that addresses a problem, propose a ticket for that
   action only. Other actions for the same problem get their own suggestions.
 - Earlier items carry a status. An earlier similar action that is open in a
@@ -88,6 +111,9 @@ Writing:
 - update: summary is a short title for the change. description contains ONLY
   the text to append to the issue. Do not restate or rewrite the existing
   issue. new_information states what is new.
+- revise: new_information states the change concretely, including names and
+  dates as said (e.g. "Deadline changed to next Wednesday; owner confirmed as
+  Embla"). summary and description may be null.
 - Use only facts from the sources. Include owner and deadline only if stated.
   Do not invent acceptance criteria, root causes, or fixes.
 - rationale: one to three sentences telling the reviewer why you chose this outcome.
@@ -128,8 +154,9 @@ class ProposalGenerator:
         context: HistoricalContext,
         assessment: ProblemAssessment | None,
         parent_problem: MeetingItem | None = None,
-    ) -> TicketProposal | Abstention:
-        """Return a pending proposal, or an Abstention when no ticket is warranted.
+    ) -> TicketProposal | RevisionSet | Abstention:
+        """Return a pending proposal, revisions of earlier pending suggestions,
+        or an Abstention when no ticket is warranted.
 
         parent_problem: set when the focus is an action addressing a problem;
         `assessment` is then that problem's assessment.
@@ -177,7 +204,7 @@ class ProposalGenerator:
             _format_meeting_items(meeting_items),
             _format_assessment(assessment),
         ]
-        if item.item_type == ItemType.ACTION:
+        if item.item_type in (ItemType.ACTION, ItemType.DECISION):
             similar = similar_earlier_items(item, context, ItemType.ACTION, self._similar_action_overlap)
             sections.append(
                 "<earlier_similar_actions>\n"
@@ -212,12 +239,21 @@ class ProposalGenerator:
         citable: dict[str, SourceDocument],
         context: HistoricalContext,
         assessment: ProblemAssessment | None,
-    ) -> TicketProposal | Abstention:
+    ) -> TicketProposal | RevisionSet | Abstention:
         def abstain(reason: str) -> Abstention:
-            return Abstention(item_id=item.item_id, reason=reason, model_outcome=output.outcome)
+            return Abstention(
+                item_id=item.item_id,
+                item_type=item.item_type,
+                item_content=item.content,
+                reason=reason,
+                model_outcome=output.outcome,
+            )
 
         if output.outcome == ProposalOutcome.NONE:
             return abstain(output.rationale.strip() or "Model chose no suggestion.")
+
+        if output.outcome == ProposalOutcome.REVISE:
+            return self._validate_revision(item, output, citable, context, abstain)
 
         focus_is_problem = item.item_type == ItemType.PROBLEM
         if focus_is_problem and assessment is not None and not assessment.is_problem:
@@ -243,6 +279,8 @@ class ProposalGenerator:
             if not (output.new_information or "").strip():
                 return abstain(f"Update to {existing_issue_key} had no new information.")
 
+        rationale = output.rationale.strip() or "No rationale provided."
+
         if output.outcome == ProposalOutcome.CREATE:
             if focus_is_problem and assessment is not None:
                 if not assessment.sufficient_evidence:
@@ -255,9 +293,14 @@ class ProposalGenerator:
                 ):
                     return abstain(f"Already tracked by open issue {tracked.issue_key}; create would duplicate it.")
 
+            # Word overlap is only a hint, so it flags the proposal for the
+            # reviewer instead of dropping it. The user decides.
             duplicate = self._find_open_duplicate(summary, item, context)
             if duplicate is not None:
-                return abstain(f"Likely duplicate of open issue {duplicate}; create would duplicate it.")
+                rationale = (
+                    f"{rationale} Possible duplicate of open issue {duplicate} "
+                    "(similar summary): check it before approving."
+                )
 
         evidence = resolve_quotes(output.evidence, citable)
         if not _has_current_meeting_evidence(evidence):
@@ -273,15 +316,60 @@ class ProposalGenerator:
             summary=summary,
             description=description,
             existing_issue_key=existing_issue_key,
-            rationale=output.rationale.strip() or "No rationale provided.",
+            rationale=rationale,
             evidence=evidence,
             related_meeting_ids=_related_meeting_ids(evidence, assessment),
         )
 
 
+    @staticmethod
+    def _validate_revision(
+        item: MeetingItem,
+        output: ProposalOutput,
+        citable: dict[str, SourceDocument],
+        context: HistoricalContext,
+        abstain,
+    ) -> RevisionSet | Abstention:
+        """Keep only targets that are retrieved, still-pending suggestions."""
+        pending: set[str] = set()
+        for prior in context.prior_proposals:
+            if prior.review_status == "pending":
+                pending.add(str(prior.proposal_id))
+
+        targets: list[str] = []
+        for proposal_id in output.revise_proposal_ids:
+            cleaned = proposal_id.strip()
+            if cleaned in pending and cleaned not in targets:
+                targets.append(cleaned)
+        if not targets:
+            return abstain("Revision named no retrieved pending suggestion.")
+
+        change = " ".join((output.new_information or "").split())
+        if not change:
+            return abstain("Revision did not state what changed.")
+
+        evidence = resolve_quotes(output.evidence, citable)
+        if not _has_current_meeting_evidence(evidence):
+            evidence = merge_evidence(item.evidence_refs, evidence)
+
+        revisions = []
+        for target in targets:
+            revisions.append(
+                ProposalRevision(
+                    proposal_id=UUID(target),
+                    item_id=item.item_id,
+                    item_content=item.content,
+                    meeting_id=item.meeting_id,
+                    change=change,
+                    evidence=evidence,
+                )
+            )
+        return RevisionSet(item_id=item.item_id, revisions=revisions)
+
     def _find_open_duplicate(self, summary: str, item: MeetingItem, context: HistoricalContext) -> str | None:
         """Key of an open Jira candidate whose summary overlaps strongly with the
-        proposed summary or the item. Deterministic, so it doesn't rely on the LLM."""
+        proposed summary or the item. Deterministic, so it doesn't rely on the
+        LLM. Used as a warning for the reviewer, never to drop a proposal."""
         for candidate in context.jira_candidates:
             if candidate.is_resolved or not candidate.summary:
                 continue
@@ -378,7 +466,7 @@ def _format_meeting_items(meeting_items: list[MeetingItem]) -> str:
 
 def _format_assessment(assessment: ProblemAssessment | None) -> str:
     if assessment is None:
-        return "<recurrence_assessment>(not assessed: the focus action is not tied to a problem)</recurrence_assessment>"
+        return "<recurrence_assessment>(not assessed: the focus item is not tied to a problem)</recurrence_assessment>"
 
     occurrence_lines = []
     for occurrence in assessment.earlier_occurrences:

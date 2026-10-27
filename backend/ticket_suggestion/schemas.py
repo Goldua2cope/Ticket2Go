@@ -55,6 +55,7 @@ class ProposalType(StrEnum):
 class ProposalOutcome(StrEnum):
     CREATE = "create"
     UPDATE = "update"
+    REVISE = "revise"   # change a pending suggestion from an earlier meeting
     NONE = "none"
 
 
@@ -213,7 +214,17 @@ class ProposalOutput(BaseModel):
         ),
     )
     new_information: str | None = Field(
-        description="update: what this meeting adds that the issue lacks. Null otherwise.",
+        description=(
+            "update: what this meeting adds that the issue lacks. revise: the change "
+            "to record on the pending suggestions, stated concretely (e.g. 'Deadline "
+            "changed to next Wednesday; owner confirmed as Embla'). Null otherwise."
+        ),
+    )
+    revise_proposal_ids: list[str] = Field(
+        description=(
+            "revise: ids of pending suggestions listed under prior_ticket_proposals "
+            "that this item changes. Empty for every other outcome."
+        ),
     )
     rationale: str = Field(description="Why this outcome, for the human reviewer.")
     evidence: list[QuoteOutput]
@@ -274,6 +285,7 @@ class PriorProposal(BaseModel):
     item_id: UUID
     proposal_type: ProposalType | None = None
     summary: str
+    description: str | None = None
     review_status: str
     execution_status: str
     existing_issue_key: str | None = None
@@ -407,11 +419,35 @@ class TicketProposal(BaseModel):
 
 
 class Abstention(BaseModel):
-    """A 'none' outcome. Logged for evaluation, not shown as a proposal."""
+    """A 'none' outcome: no ticket suggested for this item, and why.
+    Returned for transparency and evaluation; never registered as a proposal."""
 
     item_id: UUID
+    item_type: ItemType | None = None
+    item_content: str | None = None
     reason: str
     model_outcome: ProposalOutcome
+
+
+class ProposalRevision(BaseModel):
+    """A change to one pending suggestion from an earlier meeting, appended to
+    its description. Pending suggestions are drafts the user hasn't reviewed,
+    so a later meeting may refine them; reviewed ones are never touched."""
+
+    proposal_id: UUID
+    item_id: UUID          # the current-meeting item that caused the change
+    item_content: str
+    meeting_id: UUID       # the current meeting
+    change: str
+    evidence: list[EvidenceRef] = Field(default_factory=list)
+
+
+class RevisionSet(BaseModel):
+    """A 'revise' outcome: one item can revise several pending suggestions
+    (e.g. one decision moving two deadlines)."""
+
+    item_id: UUID
+    revisions: list[ProposalRevision] = Field(min_length=1)
 
 
 class RunOutcome(StrEnum):
@@ -431,6 +467,7 @@ class RunStatus(BaseModel):
     extraction_windows_failed: int = 0
     candidates: int = 0
     proposals_registered: int = 0
+    proposals_revised: int = 0
     skipped_already_reviewed: int = 0
     abstentions: int = 0
     failures: int = 0

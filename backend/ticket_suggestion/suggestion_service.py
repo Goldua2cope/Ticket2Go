@@ -5,12 +5,15 @@ Run the ticket suggestion workflow for one completed meeting:
    questions, and save them to meeting_items.
 2. Reason across history, per work unit:
    - a problem with its linked items: retrieve history and assess recurrence
-     once, then decide create / update / none for each linked action (or for
-     the problem itself when no action is linked);
-   - an action not tied to a problem: retrieve history and decide.
-3. Register create/update suggestions in ticket_proposals, save problem
-   assessments, and return the registered proposals with a run status.
-   'none' outcomes are logged, not registered.
+     once, then decide for each linked action (or for the problem itself
+     when no action is linked);
+   - an action or decision not tied to a problem: retrieve history and decide.
+   Each decision is create / update / revise / none. 'revise' changes pending
+   suggestions from earlier meetings (e.g. a moved deadline or new owner).
+3. Register create/update suggestions in ticket_proposals, append revisions
+   to earlier pending suggestions, save problem assessments, and return the
+   registered and revised proposals with a run status.
+   'none' outcomes are returned as abstentions, not registered.
 
 Output:
     {
@@ -18,7 +21,12 @@ Output:
         "status": {"outcome": "completed" | "partial" | "failed" | "no_items"
                               | "already_running",
                    "candidates": ..., "failures": ..., "abstentions": ..., ...},
+        "abstentions": [ {"item_id", "item_type", "item_content", "reason",
+                          "model_outcome"}, ... ],   # items with no ticket, and why
+        "revisions": [ {"proposal_id", "item_id", "item_content", "change"}, ... ],
     }
+"proposals" holds new/refreshed suggestions and earlier suggestions revised
+by this meeting; "revisions" says which ones were revised and how.
 
 This module only creates suggestions. It never approves them and never
 writes to Jira; that authority lies with the user.
@@ -36,7 +44,11 @@ from backend.meeting_ingestion import chunk_text
 from backend.postgres.meeting_items import fetch_meeting_dates, upsert_meeting_items
 from backend.postgres.problem_assessments import save_assessments
 from backend.postgres.suggestion_runs import suggestion_run_lock
-from backend.postgres.ticket_proposals import save_pending_proposals
+from backend.postgres.ticket_proposals import (
+    ProposalStorageError,
+    apply_revisions,
+    save_pending_proposals,
+)
 
 from .context_retrieval import ContextRetriever
 from .item_extraction import MeetingItemExtractor
@@ -48,6 +60,8 @@ from .schemas import (
     ItemType,
     MeetingItem,
     ProblemAssessment,
+    ProposalRevision,
+    RevisionSet,
     RunOutcome,
     RunStatus,
     SourceDocument,
@@ -88,29 +102,30 @@ def summary_document_id(meeting_id: str) -> str:
 class WorkUnit:
     """Items handled together: one retrieval and at most one assessment.
 
-    problem set:   the problem, every item linked to it, and the actions to
-                   propose for (empty -> propose for the problem itself).
-    problem None:  a single standalone action.
+    problem set:   the problem, every item linked to it, and its linked actions
+                   as focus items (none -> decide for the problem itself).
+                   Linked decisions and questions are context for those actions.
+    problem None:  a single standalone action or decision.
     """
 
     problem: MeetingItem | None
     linked: list[MeetingItem] = field(default_factory=list)
-    actions: list[MeetingItem] = field(default_factory=list)
+    focus_items: list[MeetingItem] = field(default_factory=list)
 
     def focuses(self) -> list[MeetingItem]:
-        """Items that each get their own create/update/none decision."""
-        if self.problem is not None and not self.actions:
+        """Items that each get their own create/update/revise/none decision."""
+        if self.problem is not None and not self.focus_items:
             return [self.problem]
-        return list(self.actions)
+        return list(self.focus_items)
 
     def all_items(self) -> list[MeetingItem]:
         items = []
         if self.problem is not None:
             items.append(self.problem)
         items.extend(self.linked)
-        for action in self.actions:
-            if action not in items:
-                items.append(action)
+        for focus in self.focus_items:
+            if focus not in items:
+                items.append(focus)
         return items
 
 
@@ -118,6 +133,7 @@ class WorkUnit:
 class UnitOutcome:
     assessment: ProblemAssessment | None = None
     proposals: list[TicketProposal] = field(default_factory=list)
+    revisions: list[ProposalRevision] = field(default_factory=list)
     abstentions: list[Abstention] = field(default_factory=list)
     failures: int = 0
 
@@ -219,10 +235,14 @@ class SuggestionService:
 
         assessments: list[ProblemAssessment] = []
         proposals: list[TicketProposal] = []
+        abstentions: list[Abstention] = []
+        revisions: list[ProposalRevision] = []
         for outcome in outcomes:
             status.failures += outcome.failures
             status.abstentions += len(outcome.abstentions)
+            abstentions.extend(outcome.abstentions)
             proposals.extend(outcome.proposals)
+            revisions.extend(outcome.revisions)
             if outcome.assessment is not None:
                 assessments.append(outcome.assessment)
                 _log_assessment(outcome.assessment)
@@ -233,12 +253,21 @@ class SuggestionService:
         registered = await save_pending_proposals(proposals, self._state)
         status.proposals_registered = len(registered)
         status.skipped_already_reviewed = len(proposals) - len(registered)
+        revision_failed = False
+        try:
+            revised = await apply_revisions(revisions, self._state, meeting_date)
+        except ProposalStorageError:
+            logger.exception("Revising earlier suggestions failed for meeting %s", meeting_id)
+            revised = []
+            revision_failed = True
+        status.proposals_revised = len(revised)
 
         if status.candidates and status.failures == status.candidates:
             status.outcome = RunOutcome.FAILED
-        elif status.failures or report.windows_failed:
+        elif status.failures or report.windows_failed or revision_failed:
             status.outcome = RunOutcome.PARTIAL
-        return _finish(meeting_id, registered, status)
+        return _finish(meeting_id, _merge_rows(registered, revised), status, abstentions,
+                       _applied_revisions(revisions, revised))
 
     async def _process_unit(
         self,
@@ -288,6 +317,8 @@ class SuggestionService:
                     continue
                 if isinstance(decision, TicketProposal):
                     outcome.proposals.append(decision)
+                elif isinstance(decision, RevisionSet):
+                    outcome.revisions.extend(decision.revisions)
                 else:
                     outcome.abstentions.append(decision)
 
@@ -324,13 +355,17 @@ def build_current_documents(
     return chunks, summary_document
 
 
+STANDALONE_FOCUS_TYPES = (ItemType.ACTION, ItemType.DECISION)
+
+
 def build_work_units(items: list[MeetingItem]) -> list[WorkUnit]:
     """One unit per problem (with everything linked to it), plus one unit per
-    action not tied to a problem. Decisions and questions never get their own
-    suggestion; they are context for the problem they're linked to.
+    action or decision not tied to a problem. Decisions can change existing
+    work (deadlines, owners, scope), so they get their own decision too.
+    Questions are only context.
 
     Extraction alone never implies a ticket: every focus still goes through
-    the create/update/none decision.
+    the create/update/revise/none decision.
     """
     units: list[WorkUnit] = []
     for item in items:
@@ -342,9 +377,9 @@ def build_work_units(items: list[MeetingItem]) -> list[WorkUnit]:
                     linked.append(other)
                     if other.item_type == ItemType.ACTION:
                         actions.append(other)
-            units.append(WorkUnit(problem=item, linked=linked, actions=actions))
-        elif item.item_type == ItemType.ACTION and item.related_problem_item_id is None:
-            units.append(WorkUnit(problem=None, actions=[item]))
+            units.append(WorkUnit(problem=item, linked=linked, focus_items=actions))
+        elif item.item_type in STANDALONE_FOCUS_TYPES and item.related_problem_item_id is None:
+            units.append(WorkUnit(problem=None, focus_items=[item]))
     return units
 
 
@@ -376,7 +411,8 @@ def _scan_text(unit: WorkUnit) -> str:
 def _unit_label(unit: WorkUnit) -> str:
     if unit.problem is not None:
         return f"problem {unit.problem.item_id}"
-    return f"action {unit.actions[0].item_id}"
+    focus = unit.focus_items[0]
+    return f"{focus.item_type.value} {focus.item_id}"
 
 
 def _log_assessment(assessment: ProblemAssessment) -> None:
@@ -393,13 +429,60 @@ def _log_assessment(assessment: ProblemAssessment) -> None:
     )
 
 
-def _output(proposals: list[dict[str, Any]], status: RunStatus) -> dict[str, Any]:
-    return {"proposals": proposals, "status": status.model_dump(mode="json")}
+def _merge_rows(registered: list[dict[str, Any]], revised: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """New/refreshed rows first, then revised earlier rows, each proposal once."""
+    merged: dict[str, dict[str, Any]] = {}
+    for row in registered + revised:
+        merged[row["proposal_id"]] = row
+    return list(merged.values())
 
 
-def _finish(meeting_id: str, proposals: list[dict[str, Any]], status: RunStatus) -> dict[str, Any]:
+def _applied_revisions(
+    revisions: list[ProposalRevision],
+    revised: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Revisions that were actually written (target still pending, not applied before)."""
+    revised_ids = set()
+    for row in revised:
+        revised_ids.add(row["proposal_id"])
+    applied = []
+    for revision in revisions:
+        if str(revision.proposal_id) in revised_ids:
+            applied.append({
+                "proposal_id": str(revision.proposal_id),
+                "item_id": str(revision.item_id),
+                "item_content": revision.item_content,
+                "change": revision.change,
+            })
+    return applied
+
+
+def _output(
+    proposals: list[dict[str, Any]],
+    status: RunStatus,
+    abstentions: list[Abstention] | None = None,
+    revisions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    abstention_rows = []
+    for abstention in abstentions or []:
+        abstention_rows.append(abstention.model_dump(mode="json"))
+    return {
+        "proposals": proposals,
+        "status": status.model_dump(mode="json"),
+        "abstentions": abstention_rows,
+        "revisions": revisions or [],
+    }
+
+
+def _finish(
+    meeting_id: str,
+    proposals: list[dict[str, Any]],
+    status: RunStatus,
+    abstentions: list[Abstention] | None = None,
+    revisions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     logger.info("Suggestion run for meeting %s: %s", meeting_id, status.model_dump(mode="json"))
-    return _output(proposals, status)
+    return _output(proposals, status, abstentions, revisions)
 
 
 async def suggest_tickets(

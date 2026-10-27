@@ -81,9 +81,33 @@ CREATE TABLE IF NOT EXISTS integration_sync_state (
         ))
 );
 
+CREATE TABLE IF NOT EXISTS problem_assessments (
+    item_id UUID PRIMARY KEY REFERENCES meeting_items(item_id) ON DELETE CASCADE,
+    is_problem BOOLEAN NOT NULL,
+    recurrence TEXT NOT NULL CHECK (recurrence IN ('new', 'recurring', 'uncertain')),
+    recurrence_count INTEGER NOT NULL CHECK (recurrence_count >= 1),
+    distinct_meeting_count INTEGER NOT NULL CHECK (distinct_meeting_count >= 1),
+    first_observed_at TIMESTAMPTZ,
+    last_observed_at TIMESTAMPTZ,
+    earlier_occurrences JSONB NOT NULL DEFAULT '[]'::jsonb,
+    likely_existing_issue TEXT,
+    existing_issue_covers_problem BOOLEAN NOT NULL DEFAULT FALSE,
+    existing_issue_resolved BOOLEAN,
+    regressed_after_resolution BOOLEAN NOT NULL DEFAULT FALSE,
+    unresolved BOOLEAN NOT NULL,
+    sufficient_evidence BOOLEAN NOT NULL,
+    evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
+    rationale TEXT NOT NULL,
+    assessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 COMMIT;
 
 
 SELECT * FROM meeting_items;
 
 SELECT * FROM ticket_proposals;
+
+SELECT * FROM jira_issue_cache;
+
+SELECT * FROM problem_assessments;

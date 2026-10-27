@@ -13,7 +13,7 @@ from uuid import UUID
 
 from starlette.datastructures import State
 
-from backend.ticket_suggestion.schemas import PriorProposal, TicketProposal
+from backend.ticket_suggestion.schemas import PriorProposal, ProposalRevision, TicketProposal
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,73 @@ async def _upsert_proposal(connection, proposal: TicketProposal):
     )
 
 
+async def apply_revisions(
+    revisions: list[ProposalRevision],
+    config: State,
+    meeting_date: str | None = None,
+) -> list[dict[str, Any]]:
+    """Append each change to its pending suggestion and return the revised rows.
+
+    The change is appended as a dated note, never rewritten, so two changes to
+    the same suggestion can't overwrite each other. A marker per revising item
+    stops a re-run from appending the same note twice. Suggestions the user
+    already approved or rejected are left untouched.
+    """
+    if not revisions:
+        return []
+
+    revised: dict[str, dict[str, Any]] = {}
+    try:
+        async with asyncio.timeout(10):
+            async with config.postgres.acquire() as connection:
+                async with connection.transaction():
+                    for revision in revisions:
+                        row = await _append_revision(connection, revision, meeting_date)
+                        if row is not None:
+                            data = _row_to_dict(row)
+                            revised[data["proposal_id"]] = data
+    except Exception as exc:
+        logger.warning("Revising ticket proposals failed (%s)", type(exc).__name__)
+        raise ProposalStorageError("Could not revise earlier ticket suggestions in PostgreSQL.") from None
+
+    return list(revised.values())
+
+
+def revision_marker(revision: ProposalRevision) -> str:
+    return f"[Ticket2Go update from item {revision.item_id}]"
+
+
+async def _append_revision(connection, revision: ProposalRevision, meeting_date: str | None):
+    marker = revision_marker(revision)
+    when = f" ({meeting_date[:10]})" if meeting_date else ""
+    note = f"\n\nUpdate from a later meeting{when}: {revision.change} {marker}"
+    evidence = json.dumps([ref.model_dump(mode="json") for ref in revision.evidence])
+
+    return await connection.fetchrow(
+        """
+        UPDATE ticket_proposals SET
+            description = COALESCE(description, '') || $2,
+            evidence = evidence || $3::jsonb,
+            related_meeting_ids = CASE
+                WHEN $4::uuid = ANY(related_meeting_ids) THEN related_meeting_ids
+                ELSE array_append(related_meeting_ids, $4::uuid)
+            END
+        WHERE proposal_id = $1
+          AND review_status = 'pending'
+          AND position($5 IN COALESCE(description, '')) = 0
+        RETURNING proposal_id, item_id, proposal_type, summary, description,
+                  assignee_account_id, review_status, execution_status,
+                  existing_issue_key, jira_issue_key, rationale, evidence,
+                  related_meeting_ids
+        """,
+        revision.proposal_id,
+        note,
+        evidence,
+        revision.meeting_id,
+        marker,
+    )
+
+
 def _row_to_dict(row) -> dict[str, Any]:
     """A ticket_proposals row as a JSON-friendly dict."""
     data = dict(row)
@@ -117,7 +184,7 @@ async def fetch_related_proposals(
     async with asyncio.timeout(5):
         rows = await config.postgres.fetch(
             """
-            SELECT p.proposal_id, p.item_id, p.proposal_type, p.summary,
+            SELECT p.proposal_id, p.item_id, p.proposal_type, p.summary, p.description,
                    p.review_status, p.execution_status, p.existing_issue_key,
                    p.jira_issue_key,
                    EXISTS (

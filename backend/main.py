@@ -38,6 +38,7 @@ from backend.config import (
 )
 from backend.meeting_ingestion import ingest_meeting_transcript, ingest_meeting_summary
 from backend.jira_sync import sync_jira_to_cosmos
+from backend.ticket_suggestion.suggestion_service import suggest_tickets
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -87,6 +88,114 @@ def _schedule_jira_sync() -> None:
         _run_jira_sync(),
         name="jira-sync",
     )
+
+
+# ---- Ticket suggestions ------------------------------------------------------
+# Runs after a meeting is completed. For now the result is only printed to the
+# terminal; proposals are also registered in ticket_proposals as 'pending'.
+
+TICKET_SUGGESTION_TIMEOUT_SECONDS = 900
+
+
+def _print_ticket_suggestions(meeting_id: str, result: dict) -> None:
+    """Print the registered ticket suggestions and the run status."""
+    status = result["status"]
+    proposals = result["proposals"]
+
+    lines = [
+        "",
+        "=" * 80,
+        f"TICKET SUGGESTIONS for meeting {meeting_id}",
+        (
+            f"Outcome: {status['outcome']} | items: {status['items_extracted']} | "
+            f"candidates: {status['candidates']} | registered: {status['proposals_registered']} | "
+            f"revised: {status.get('proposals_revised', 0)} | "
+            f"no ticket: {status['abstentions']} | failed: {status['failures']} | "
+            f"recurring problems: {status['recurring_problems']}"
+        ),
+        "-" * 80,
+    ]
+
+    if not proposals:
+        lines.append("No ticket suggestions for this meeting.")
+
+    changes_by_proposal: dict[str, list[str]] = {}
+    for revision in result.get("revisions", []):
+        changes_by_proposal.setdefault(revision["proposal_id"], []).append(
+            f"{revision['change']} (from: {revision['item_content']})"
+        )
+
+    for number, proposal in enumerate(proposals, start=1):
+        action = proposal["proposal_type"].upper()
+        if proposal.get("existing_issue_key"):
+            action += f" {proposal['existing_issue_key']}"
+        if proposal["proposal_id"] in changes_by_proposal:
+            action = f"REVISED earlier {action}"
+        lines.append(f"[{number}] {action}: {proposal['summary']}")
+        for change in changes_by_proposal.get(proposal["proposal_id"], []):
+            lines.append(f"    Changed in this meeting: {change}")
+        lines.append(f"    Why: {proposal.get('rationale') or '-'}")
+        if proposal.get("description"):
+            description = proposal["description"].replace("\n", "\n                 ")
+            lines.append(f"    Description: {description}")
+        if proposal.get("related_meeting_ids"):
+            lines.append(f"    Earlier meetings: {len(proposal['related_meeting_ids'])}")
+        for evidence in proposal.get("evidence", [])[:3]:
+            lines.append(f"    Evidence: \"{evidence.get('quote')}\"")
+        lines.append(f"    Proposal id: {proposal['proposal_id']} (review: {proposal['review_status']})")
+        lines.append("")
+
+    abstentions = result.get("abstentions", [])
+    if abstentions:
+        lines.append("-" * 80)
+        lines.append("NO TICKET SUGGESTED")
+        for abstention in abstentions:
+            item_type = abstention.get("item_type") or "item"
+            lines.append(f"  - [{item_type}] {abstention.get('item_content') or abstention['item_id']}")
+            lines.append(f"    Reason: {abstention['reason']}")
+
+    lines.append("=" * 80)
+    print("\n".join(lines), flush=True)
+
+
+async def _run_ticket_suggestions(meeting_id: str, transcript: dict, summary: str) -> None:
+    """Generate ticket suggestions without affecting the finished meeting."""
+    logger.info("Starting ticket suggestions for meeting %s.", meeting_id)
+
+    try:
+        async with asyncio.timeout(TICKET_SUGGESTION_TIMEOUT_SECONDS):
+            result = await suggest_tickets(
+                meeting_id=meeting_id,
+                transcription=transcript,
+                summary=summary,
+                state=app.state,
+            )
+    except asyncio.CancelledError:
+        logger.warning("Ticket suggestions for meeting %s were cancelled.", meeting_id)
+        raise
+    except Exception:
+        logger.exception(
+            "Ticket suggestions failed for meeting %s. The meeting itself is saved.",
+            meeting_id,
+        )
+        return
+
+    _print_ticket_suggestions(meeting_id, result)
+
+
+def _schedule_ticket_suggestions(meeting_id: str, transcript: dict, summary: str) -> None:
+    """Start ticket suggestions in the background, keeping a reference to the task."""
+    tasks = getattr(app.state, "ticket_suggestion_tasks", None)
+    if tasks is None:
+        tasks = set()
+        app.state.ticket_suggestion_tasks = tasks
+
+    task = asyncio.create_task(
+        _run_ticket_suggestions(meeting_id, transcript, summary),
+        name=f"ticket-suggestions-{meeting_id}",
+    )
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
 
 
 @app.get("/health")
@@ -248,6 +357,9 @@ async def transcribe(websocket: WebSocket):
         await update_meeting(meeting_id, "completed", app.state)
         meeting_completed = True
 
+        # Suggest Jira tickets in the background; results are printed to the terminal.
+        _schedule_ticket_suggestions(meeting_id, transcript, summary)
+
         # Completion now includes the generated summary.
         await websocket.send_json(
             {
@@ -306,4 +418,4 @@ frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 app.mount("/", StaticFiles(directory=frontend_dist, html=True))
 
 if __name__ == "__main__":
-    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000)

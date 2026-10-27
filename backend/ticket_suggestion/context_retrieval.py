@@ -39,6 +39,7 @@ from .schemas import (
     HistoricalContext,
     HistoricalItem,
     JiraCandidate,
+    PriorProposal,
     SourceDocument,
     Tracking,
 )
@@ -47,6 +48,7 @@ logger = logging.getLogger(__name__)
 
 RRF_K = 60
 MAX_JIRA_TEXT_CHARS = 2000
+MAX_PRIOR_DESCRIPTION_CHARS = 600
 ISSUE_KEY_PATTERN = re.compile(r"\b[A-Z][A-Z0-9_]+-\d+\b")
 
 STOPWORDS = frozenset("""
@@ -183,6 +185,7 @@ class ContextRetriever:
         for candidate in jira_candidates:
             issue_keys.append(candidate.issue_key)
         prior_proposals = await fetch_related_proposals(proposal_item_ids, issue_keys, self._state)
+        jira_candidates = await self._add_proposal_issues(jira_candidates, prior_proposals, project_key)
 
         return HistoricalContext(
             documents=documents,
@@ -190,6 +193,40 @@ class ContextRetriever:
             prior_proposals=prior_proposals,
             jira_candidates=jira_candidates,
         )
+
+    async def _add_proposal_issues(
+        self,
+        candidates: list[JiraCandidate],
+        prior_proposals: list[PriorProposal],
+        project_key: str,
+    ) -> list[JiraCandidate]:
+        """Add Jira issues that earlier proposals created or targeted, so a
+        change to already-approved work can become an update of that issue."""
+        known = set()
+        for candidate in candidates:
+            known.add(candidate.issue_key)
+        missing: list[str] = []
+        for proposal in prior_proposals:
+            key = proposal.jira_issue_key or proposal.existing_issue_key
+            if key and key not in known and key not in missing:
+                missing.append(key)
+        if not missing:
+            return candidates
+
+        rows = await self._query(
+            f"SELECT {JIRA_FIELDS} FROM c WHERE c.data_source = 'jira_issues' "
+            "AND c.project_key = @project_key AND ARRAY_CONTAINS(@keys, c.issue_key)",
+            [
+                {"name": "@project_key", "value": project_key},
+                {"name": "@keys", "value": missing},
+            ],
+        )
+        extended = list(candidates)
+        for row in rows:
+            candidate = _jira_row_to_candidate(row)
+            if candidate is not None:
+                extended.append(candidate)
+        return extended
 
     def _since(self) -> datetime | None:
         if self._lookback_days is None:
@@ -613,13 +650,19 @@ def render_context(context: HistoricalContext) -> str:
         jira_key = proposal.jira_issue_key or proposal.existing_issue_key or "no issue"
         edited = ", edited by user" if proposal.edited_by_user else ""
         proposal_lines.append(
-            f"- [{proposal_type}, review {proposal.review_status}{edited}, "
+            f"- id={proposal.proposal_id} [{proposal_type}, review {proposal.review_status}{edited}, "
             f"execution {proposal.execution_status}, {jira_key}] {proposal.summary}"
         )
+        if proposal.description:
+            description = " ".join(proposal.description.split())
+            if len(description) > MAX_PRIOR_DESCRIPTION_CHARS:
+                description = description[:MAX_PRIOR_DESCRIPTION_CHARS].rstrip() + "..."
+            proposal_lines.append(f"  description: {description}")
     sections.append(
         "<prior_ticket_proposals>\n"
-        "A rejection means the user didn't want that ticket then. It is not proof "
-        "the problem doesn't exist.\n"
+        "Pending suggestions are drafts the user hasn't reviewed yet; they can be "
+        "revised. A rejection means the user didn't want that ticket then. It is "
+        "not proof the problem doesn't exist.\n"
         + ("\n".join(proposal_lines) or "(none)")
         + "\n</prior_ticket_proposals>"
     )

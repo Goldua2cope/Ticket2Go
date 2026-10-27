@@ -4,3 +4,4 @@ __pycache__
 .env.*
 AGENTS.md
 CLAUDE.md
+tests
