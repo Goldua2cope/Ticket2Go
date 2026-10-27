@@ -11,11 +11,9 @@ from uuid import uuid4
 import uvicorn
 from fastapi.staticfiles import StaticFiles
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from openai import OpenAI
-from pydantic import BaseModel, Field, field_validator
 from websockets.exceptions import InvalidStatus
 
 from backend.live_transcription import TranscriptionError, stream_transcription
@@ -38,11 +36,13 @@ from backend.config import (
 )
 from backend.meeting_ingestion import ingest_meeting_transcript, ingest_meeting_summary
 from backend.jira_sync import sync_jira_to_cosmos
+from backend.ticket_suggestion.routes import router as suggestion_router
 
 logger = logging.getLogger("uvicorn.error")
 
 # Initialize Application
 app = FastAPI(lifespan=lifespan)
+app.include_router(suggestion_router)
 
 
 async def _run_jira_sync() -> None:
@@ -87,7 +87,6 @@ def _schedule_jira_sync() -> None:
         _run_jira_sync(),
         name="jira-sync",
     )
-
 
 @app.get("/health")
 async def health():
@@ -306,4 +305,4 @@ frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 app.mount("/", StaticFiles(directory=frontend_dist, html=True))
 
 if __name__ == "__main__":
-    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("backend.main:app", host="127.0.0.1", port=8000)

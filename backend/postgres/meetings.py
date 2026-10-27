@@ -15,6 +15,22 @@ class MeetingStorageError(Exception):
     """A database error that is safe to display to the user."""
 
 
+async def fetch_meeting(meeting_id: UUID, config: State):
+    """Return the meeting needed for suggestion generation, or None."""
+    try:
+        async with asyncio.timeout(5):
+            return await config.postgres.fetchrow(
+                """
+                SELECT meeting_id, meeting_date, processing_status, transcript_blob_uri
+                FROM meetings WHERE meeting_id = $1
+                """,
+                meeting_id,
+            )
+    except Exception as exc:
+        logger.warning("Meeting lookup failed (%s)", type(exc).__name__)
+        raise MeetingStorageError("Could not load the meeting from PostgreSQL.") from None
+
+
 async def create_meeting(meeting_id: str, meeting_date: datetime, config: State):
     """Create a pending record using the same ID as the transcript blob."""
     local_date = meeting_date.astimezone(ZoneInfo("Europe/Stockholm"))
