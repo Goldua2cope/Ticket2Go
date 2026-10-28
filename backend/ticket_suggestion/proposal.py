@@ -104,7 +104,7 @@ Descriptions are sent to Jira as plain text, one paragraph per line. Use the pla
 - Do not put owners, deadlines, or status in the summary.
 - Weak: "Transcript language". Strong: "Keep live transcripts in one detected language".
 
-**Description:** Follow this outline. Always include `Story:`. Include any other label only when the sources support at least one line for it, and leave out lines with no supported value. Never write "TBD", "None", or "Not stated".
+**Description:** Follow this outline. Include any other label only when the sources support at least one line for it, and leave out lines with no supported value. Never write "TBD", "None", or "Not stated".
 
 ```
 Story: We need to <task> in order for <who benefits> to <outcome>.
@@ -113,7 +113,7 @@ Acceptance criteria:
 Context:
 - Owner: <name>
 - Deadline: <date expression>
-- Related: <ISSUE-KEY> (<open or resolved>): <how it relates>
+- Related: <ISSUE-KEY> (<open or resolved>): <how it relates (never exceed 100 words)>
 - Blocked by: <blocker>
 - Open question: <question>
 ```
