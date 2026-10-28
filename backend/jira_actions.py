@@ -10,7 +10,7 @@ LLM without an independent approval check.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time, timezone
 from typing import Any, Sequence
 from urllib.parse import quote
 
@@ -282,6 +282,194 @@ async def get_jira_issue(state: State, issue_key: str) -> dict[str, Any]:
     return _normalize_issue(result, _required_state_value(state, "jira_base_url"))
 
 
+# Retrieves a Jira issue's field-change history, with optional date filtering.
+async def get_jira_issue_changelog(
+    state: State,
+    issue_key: str,
+    *,
+    since: str | date | None = None,
+    max_changes: int = 100,
+) -> list[dict[str, Any]]:
+    """Return recent field-level changes for a Jira issue.
+
+    Args:
+        state: Application state containing Jira configuration.
+        issue_key: Jira issue key or ID.
+        since: Optional date (YYYY-MM-DD) or ISO datetime. Only changes
+            at or after this date/time are returned.
+        max_changes: Maximum number of field changes to return (1–100).
+
+    Returns:
+        A list containing the issue key, timestamp, author, field,
+        previous value, and new value for each change.
+    """
+    if not issue_key or not issue_key.strip():
+        raise ValueError("issue_key must not be empty.")
+    if not 1 <= max_changes <= 100:
+        raise ValueError("max_changes must be between 1 and 100.")
+
+    encoded_key = quote(issue_key.strip(), safe="")
+    page_size = 100
+
+    # Parse the optional cutoff as UTC.
+    since_datetime: datetime | None = None
+
+    if isinstance(since, datetime):
+        since_datetime = since
+    elif isinstance(since, date):
+        since_datetime = datetime.combine(
+            since, time.min, tzinfo=timezone.utc
+        )
+    elif isinstance(since, str):
+        value = since.strip()
+        if not value:
+            raise ValueError("since must not be empty when provided.")
+
+        try:
+            if len(value) == 10:
+                since_datetime = datetime.combine(
+                    date.fromisoformat(value),
+                    time.min,
+                    tzinfo=timezone.utc,
+                )
+            else:
+                since_datetime = datetime.fromisoformat(
+                    value.replace("Z", "+00:00")
+                )
+        except ValueError as exc:
+            raise ValueError(
+                "since must be a YYYY-MM-DD date or an ISO datetime."
+            ) from exc
+    elif since is not None:
+        raise ValueError("since must be a string, date, or None.")
+
+    if since_datetime is not None:
+        if since_datetime.tzinfo is None:
+            since_datetime = since_datetime.replace(tzinfo=timezone.utc)
+        else:
+            since_datetime = since_datetime.astimezone(timezone.utc)
+
+    # Parse Jira timestamps into comparable UTC datetimes.
+    def parse_timestamp(value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    # Convert each changelog entry into one record per changed field.
+    def flatten_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        flattened: list[dict[str, Any]] = []
+
+        for entry in entries:
+            changed_at = entry.get("created")
+            changed_datetime = parse_timestamp(changed_at)
+
+            if since_datetime is not None:
+                if changed_datetime is None or changed_datetime < since_datetime:
+                    continue
+
+            author = entry.get("author") or {}
+
+            for item in entry.get("items") or []:
+                flattened.append(
+                    {
+                        "issue_key": issue_key.strip(),
+                        "changelog_id": entry.get("id"),
+                        "changed_at": changed_at,
+                        "author": author.get("displayName"),
+                        "field": item.get("field") or item.get("fieldId"),
+                        "from_value": (
+                            item.get("fromString")
+                            if item.get("fromString") is not None
+                            else item.get("from")
+                        ),
+                        "to_value": (
+                            item.get("toString")
+                            if item.get("toString") is not None
+                            else item.get("to")
+                        ),
+                    }
+                )
+
+        return flattened
+
+    # Get the first page to discover how many changelog entries exist.
+    first_page = await _jira_request(
+        state,
+        "GET",
+        f"issue/{encoded_key}/changelog",
+        params={"startAt": 0, "maxResults": page_size},
+    )
+    first_entries = first_page.get("values") or []
+    total = first_page.get("total")
+
+    changes: list[dict[str, Any]] = []
+
+    if since_datetime is None and isinstance(total, int) and total > len(first_entries):
+        # Without a cutoff date, start with the newest history instead of
+        # downloading old changes that are unlikely to be relevant.
+        end = total
+
+        while end > 0 and len(changes) < max_changes:
+            start = max(0, end - page_size)
+            page = await _jira_request(
+                state,
+                "GET",
+                f"issue/{encoded_key}/changelog",
+                params={
+                    "startAt": start,
+                    "maxResults": end - start,
+                },
+            )
+            entries = page.get("values") or []
+
+            # Pages are retrieved newest-first; prepend to retain chronological order.
+            changes = flatten_entries(entries) + changes
+            end = start
+
+            if not entries:
+                break
+
+            changes = changes[-max_changes:]
+    else:
+        # With a cutoff date, inspect all pages so older entries can be
+        # filtered correctly and the most recent matching changes retained.
+        page = first_page
+        start = 0
+
+        while True:
+            entries = page.get("values") or []
+            changes.extend(flatten_entries(entries))
+            changes = changes[-max_changes:]
+
+            if page.get("isLast") is True or not entries:
+                break
+
+            next_start = int(page.get("startAt", start)) + len(entries)
+            page_total = page.get("total")
+
+            if isinstance(page_total, int) and next_start >= page_total:
+                break
+            if len(entries) < page_size and not isinstance(page_total, int):
+                break
+
+            start = next_start
+            page = await _jira_request(
+                state,
+                "GET",
+                f"issue/{encoded_key}/changelog",
+                params={"startAt": start, "maxResults": page_size},
+            )
+
+    return changes[-max_changes:]
+
+
 # Retrieves the issue types available for creating tickets in the configured Jira project.
 async def get_project_issue_types(state: State) -> list[dict[str, Any]]:
     """Get issue types available for creating issues in the configured Jira project."""
@@ -542,7 +730,6 @@ async def _query_cosmos(
     results = container.query_items(
         query=query,
         parameters=parameters,
-        enable_cross_partition_query=True,
     )
     items: list[dict[str, Any]] = []
     async for item in results:
@@ -633,6 +820,93 @@ async def get_recent_meeting_summaries(
         max_items=limit,
     )
 
+async def get_recent_meetings(
+    state: State,
+    *,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """List distinct recent meetings found in summaries or transcript chunks."""
+    if not 1 <= limit <= 10:
+        raise ValueError("limit must be between 1 and 10.")
+
+    # Retrieve both record types. Multiple transcript chunks and a summary
+    # must not cause the same meeting to be counted more than once.
+    rows = await _query_cosmos(
+        state,
+        """
+        SELECT DISTINCT TOP 100
+            c.meeting_id,
+            c.meeting_title,
+            c.meeting_date,
+            c.content_type
+        FROM c
+        WHERE c.data_source = @source
+            AND IS_DEFINED(c.meeting_id)
+            AND IS_DEFINED(c.meeting_date)
+            AND (
+                c.content_type = @summary_type
+                OR c.content_type = @transcript_type
+            )
+        ORDER BY c.meeting_date DESC
+        """,
+        [
+            {"name": "@source", "value": "meeting_history"},
+            {"name": "@summary_type", "value": "meeting_summary"},
+            {"name": "@transcript_type", "value": "transcript_chunk"},
+        ],
+        max_items=100,
+    )
+
+    meetings: dict[str, dict[str, Any]] = {}
+
+    for row in rows:
+        meeting_id = row.get("meeting_id")
+        if not meeting_id:
+            continue
+
+        meeting = meetings.setdefault(
+            meeting_id,
+            {
+                "id": f"meeting-index:{meeting_id}",
+                "meeting_id": meeting_id,
+                "meeting_title": row.get("meeting_title"),
+                "meeting_date": row.get("meeting_date"),
+                "content_type": "meeting_index",
+                "record_types": set(),
+                "has_summary": False,
+                "has_transcript": False,
+            },
+        )
+
+        # Fill missing metadata if another record for this meeting has it.
+        if not meeting.get("meeting_title") and row.get("meeting_title"):
+            meeting["meeting_title"] = row["meeting_title"]
+
+        row_date = row.get("meeting_date")
+        current_date = meeting.get("meeting_date")
+        if row_date and (not current_date or row_date > current_date):
+            meeting["meeting_date"] = row_date
+
+        content_type = row.get("content_type")
+        if content_type in {"meeting_summary", "transcript_chunk"}:
+            meeting["record_types"].add(content_type)
+
+        if content_type == "meeting_summary":
+            meeting["has_summary"] = True
+        elif content_type == "transcript_chunk":
+            meeting["has_transcript"] = True
+
+    results = list(meetings.values())
+    results.sort(
+        key=lambda item: item.get("meeting_date") or "",
+        reverse=True,
+    )
+
+    for meeting in results:
+        meeting["record_types"] = sorted(meeting["record_types"])
+
+    return results[:limit]
+
 # Performs semantic search across meeting history and Jira documents stored in Cosmos DB.
 async def search_cosmos_context(
     state: State,
@@ -672,11 +946,14 @@ async def search_cosmos_context(
         c.project_key, c.project_name, c.summary, c.description,
         c.issue_type, c.status, c.priority, c.assignee_display_name,
         c.labels, c.components, c.jira_url, c.text,
-        VectorDistance(c.embedding, @embedding, false, {{'distanceFunction': 'Cosine'}}) AS vector_distance
+        VectorDistance(c.embedding, @embedding) AS vector_distance
     FROM c
     WHERE {' AND '.join(filters)}
-    ORDER BY VectorDistance(c.embedding, @embedding, false, {{'distanceFunction': 'Cosine'}}) DESC
+    ORDER BY VectorDistance(c.embedding, @embedding)
     """
+    # false, {{'distanceFunction': 'Cosine'}}
+    # false, {{'distanceFunction': 'Cosine'}}
+    # DESC
     return await _query_cosmos(
         state,
         query_sql,

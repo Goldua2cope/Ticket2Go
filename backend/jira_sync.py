@@ -216,14 +216,14 @@ def _jql_timestamp(value: datetime, jira_timezone: Any) -> str:
 
 
 async def _fetch_all_issues(client: httpx.AsyncClient, config: dict[str, Any],
-                            jql: str,) -> tuple[list[dict[str, Any]], int]:
+                            jql: str, *, fields: list[str] | None = None,) -> tuple[list[dict[str, Any]], int]:
     
     """Fetch all pages from Jira's enhanced JQL search endpoint."""
     url = f"{config['base_url']}/rest/api/3/search/jql"
 
     payload: dict[str, Any] = {
         "jql": jql,
-        "fields": JIRA_FIELDS,
+        "fields": fields if fields is not None else JIRA_FIELDS,
         "maxResults": config["page_size"],
     }
 
@@ -515,6 +515,117 @@ def _deduplicate_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
             unique[issue_id] = issue
     return list(unique.values())
 
+async def _reconcile_jira_issue_documents(
+    client: httpx.AsyncClient,
+    config: dict[str, Any],
+    container: Any,
+    project_key: str,
+) -> dict[str, Any]:
+    """Remove Cosmos Jira documents absent from the current project in Jira.
+
+    Fetches the complete current issue list from Jira, compares its issue IDs
+    against Cosmos documents belonging to the configured project, and deletes
+    only stale Jira issue documents.
+
+    If Jira returns an empty project result, deletion is skipped as a safety
+    measure. A failed or incomplete Jira scan raises an exception, preventing
+    the sync checkpoint from advancing.
+    """
+    jql = f'project = "{project_key}" ORDER BY key ASC'
+
+    live_issues, pages = await _fetch_all_issues(
+        client,
+        config,
+        jql,
+        fields=["summary"],
+    )
+
+    # A successful but unexpectedly empty response must not delete every
+    # stored issue. The sync account might have lost project visibility.
+    if not live_issues:
+        print(
+            "WARNING: Jira returned zero issues during deletion reconciliation. "
+            "Skipping deletion to protect existing Cosmos documents."
+        )
+        return {
+            "reconciliation_pages": pages,
+            "live_issues_found": 0,
+            "stale_documents_removed": 0,
+            "reconciliation_performed": False,
+        }
+
+    # Jira IDs are stable even if an issue key changes.
+    live_document_ids: set[str] = set()
+
+    for issue in live_issues:
+        jira_id = str(issue.get("id") or "").strip()
+        if not jira_id:
+            raise RuntimeError(
+                "Jira returned an issue without an ID. "
+                "Deletion reconciliation was aborted."
+            )
+        live_document_ids.add(f"jira:{jira_id}")
+
+    # Query only this project's Jira issue documents. Meeting history,
+    # summaries, transcript chunks and sync checkpoints are excluded.
+    query = """
+        SELECT c.id
+        FROM c
+        WHERE c.data_source = @source
+          AND c.content_type = @content_type
+          AND c.project_key = @project_key
+    """
+
+    parameters = [
+        {"name": "@source", "value": "jira_issues"},
+        {"name": "@content_type", "value": "jira_issue"},
+        {"name": "@project_key", "value": project_key},
+    ]
+
+    results = container.query_items(
+        query=query,
+        parameters=parameters,
+    )
+
+    existing_document_ids: set[str] = set()
+
+    async for item in results:
+        document_id = item.get("id")
+        if isinstance(document_id, str) and document_id:
+            existing_document_ids.add(document_id)
+
+    stale_document_ids = sorted(existing_document_ids - live_document_ids)
+
+    removed = 0
+
+    for document_id in stale_document_ids:
+        try:
+            # The container partition key is /id.
+            await container.delete_item(
+                item=document_id,
+                partition_key=document_id,
+            )
+            removed += 1
+            print(f"Removed stale Jira document: {document_id}")
+
+        except CosmosResourceNotFoundError:
+            # Another process may already have removed this document.
+            continue
+
+    print(
+        "Jira deletion reconciliation completed: "
+        f"{len(live_document_ids)} current Jira issues, "
+        f"{len(existing_document_ids)} indexed Jira documents, "
+        f"{removed} stale documents removed."
+    )
+
+    return {
+        "reconciliation_pages": pages,
+        "live_issues_found": len(live_document_ids),
+        "stale_documents_removed": removed,
+        "reconciliation_performed": True,
+    }
+
 
 async def sync_jira_to_cosmos(state: State, *, force_full: bool = False) -> dict[str, Any]:
     """Run one Jira sync.
@@ -636,6 +747,16 @@ async def sync_jira_to_cosmos(state: State, *, force_full: bool = False) -> dict
             document["synced_at_utc"] = sync_started.isoformat()
             await container.upsert_item(document)
 
+        # Reconcile deletions on every run, including incremental syncs.
+        # This is necessary because deleted Jira issues cannot be found by the
+        # "updated since checkpoint" JQL query.
+        reconciliation_result = await _reconcile_jira_issue_documents(
+            client,
+            config,
+            container,
+            project_key,
+        )
+
         # Use the run's start time as the watermark. Any issues changed during the
         # current scan will be included on the next run (also protected by overlap).
         sync_completed = datetime.now(timezone.utc)
@@ -669,6 +790,10 @@ async def sync_jira_to_cosmos(state: State, *, force_full: bool = False) -> dict
             "embedding_dimensions": EMBEDDING_DIMENSIONS,
             "checkpoint_id": checkpoint_id,
             "sync_watermark_utc": sync_started.isoformat(),
+            "reconciliation_pages": reconciliation_result["reconciliation_pages"],
+            "live_issues_found": reconciliation_result["live_issues_found"],
+            "stale_documents_removed": reconciliation_result["stale_documents_removed"],
+            "reconciliation_performed": reconciliation_result["reconciliation_performed"],
         }
 
         print("\nJira sync completed successfully:")
