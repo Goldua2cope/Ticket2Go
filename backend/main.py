@@ -11,9 +11,10 @@ from uuid import uuid4
 import uvicorn
 from fastapi.staticfiles import StaticFiles
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from websockets.exceptions import InvalidStatus
 
 from backend.live_transcription import TranscriptionError, stream_transcription
@@ -34,6 +35,10 @@ from backend.config import (
     check_storage_container,
     run_health_check,
 )
+from backend.meeting_assistant import (
+    prepare_conversation_messages,
+    stream_meeting_assistant,
+)
 from backend.meeting_ingestion import ingest_meeting_transcript, ingest_meeting_summary
 from backend.jira_sync import sync_jira_to_cosmos
 from backend.ticket_suggestion.routes import router as suggestion_router
@@ -44,6 +49,21 @@ logger = logging.getLogger("uvicorn.error")
 app = FastAPI(lifespan=lifespan)
 app.include_router(suggestion_router)
 
+
+class MeetingAssistantMessage(BaseModel):
+    """One message in the active assistant conversation."""
+
+    role: str = Field(pattern=r"^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=24_000)
+
+
+class MeetingAssistantRequest(BaseModel):
+    """Conversation history submitted by the frontend."""
+
+    messages: list[MeetingAssistantMessage] = Field(
+        min_length=1,
+        max_length=100,
+    )
 
 async def _run_jira_sync() -> None:
     """Run Jira synchronization without interrupting the meeting."""
@@ -115,6 +135,73 @@ async def health():
         },
     )
 
+@app.post("/api/meeting-assistant/chat")
+async def meeting_assistant_chat(
+    payload: MeetingAssistantRequest,
+    request: Request,
+):
+    """
+    Stream Meeting Assistant responses and retrieval progress to the frontend.
+    """
+    messages = [
+        message.model_dump()
+        for message in payload.messages
+    ]
+
+    # Validate before starting the HTTP stream so invalid requests can
+    # receive a proper HTTP 422 response.
+    try:
+        prepared_messages = prepare_conversation_messages(messages)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+
+    async def event_stream():
+        try:
+            async for event in stream_meeting_assistant(
+                request.app.state,
+                prepared_messages,
+            ):
+                yield (
+                    f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                )
+
+        except asyncio.CancelledError:
+            # Allow cancellation to propagate if the client disconnects.
+            raise
+
+        except Exception:
+            logger.exception(
+                "Meeting Assistant streaming endpoint failed."
+            )
+
+            # The response has already started, so report unexpected
+            # failures through the stream rather than raising HTTPException.
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "error",
+                        "message": (
+                            "The Meeting Assistant request failed. "
+                            "Please try again."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 @app.websocket("/ws/transcribe")
 async def transcribe(websocket: WebSocket):
