@@ -1,12 +1,14 @@
-import type { Task } from "../../lib/types";
+import type { Task, TaskAction } from "../../lib/types";
 import TaskCard from "./TaskCard";
 import EmptyState from "../ui/EmptyState";
 export default function TaskSuggestions({
   tasks,
   onChange,
+  loading = false,
 }: {
   tasks: Task[];
-  onChange: (task: Task) => void;
+  onChange: (task: Task, action: TaskAction) => Promise<void>;
+  loading?: boolean;
 }) {
   return (
     <section className="suggestions">
@@ -21,21 +23,21 @@ export default function TaskSuggestions({
           {tasks.filter((task) => task.status === "pending").length} to review
         </span>
       </div>
+      {loading && <p role="status">Generating task suggestions… Your summary is ready above.</p>}
       {tasks.length ? (
         <div className="task-grid">
           {tasks.map((task) => (
             <TaskCard key={task.id} task={task} onChange={onChange} />
           ))}
         </div>
-      ) : (
+      ) : !loading ? (
         <EmptyState
           title="No task suggestions yet"
-          description="Tasks appear here after a meeting when its AI summary includes structured action items. You can also review the full summary for next steps."
+          description="No task suggestions are available for this meeting. Check the generation status above, or review the summary for next steps."
         />
-      )}
+      ) : null}
       <p className="subtle-note">
-        Review AI suggestions for accuracy. Approvals are saved in this browser;
-        they do not create Jira tickets.
+        Review before approving. Approval sends the task to Jira. Decisions are final; further changes happen in Jira.
       </p>
     </section>
   );

@@ -212,3 +212,4 @@ async def fetch_related_proposals(
     for row in rows:
         proposals.append(PriorProposal(**dict(row)))
     return proposals
+

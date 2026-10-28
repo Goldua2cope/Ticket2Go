@@ -17,7 +17,7 @@ export function isMeetings(value: unknown): value is Meeting[] {
             typeof t.id === "string" &&
             typeof t.title === "string" &&
             typeof t.owner === "string" &&
-            typeof t.deadline === "string" &&
+            typeof t.priority === "string" &&
             ["pending", "approved", "rejected"].includes(String(t.status)),
         ),
     )

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { Task } from "../../lib/types";
+import { useRef, useState } from "react";
+import type { Task, TaskAction } from "../../lib/types";
 import { PRIORITY_OPTIONS } from "../../lib/types";
 import Icon from "../ui/Icon";
 export default function TaskCard({
@@ -7,10 +7,37 @@ export default function TaskCard({
   onChange,
 }: {
   task: Task;
-  onChange: (task: Task) => void;
+  onChange: (task: Task, action: TaskAction) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const submitting = useRef(false);
+  async function submit(updated: Task, action: TaskAction) {
+    if (submitting.current) return;
+    submitting.current = true;
+    setSaving(true);
+    setError("");
+    try {
+      await onChange(updated, action);
+      setEditing(false);
+    } catch (failure) {
+      setError(
+        failure instanceof Error
+          ? failure.message
+          : "Could not save the decision.",
+      );
+    } finally {
+      submitting.current = false;
+      setSaving(false);
+    }
+  }
+  const pending = task.status === "pending";
+  const jiraUrl =
+    task.jiraUrl && /^https:\/\//i.test(task.jiraUrl)
+      ? task.jiraUrl
+      : undefined;
   function edit() {
     setDraft(task);
     setEditing(true);
@@ -27,16 +54,15 @@ export default function TaskCard({
         </span>
         <span className="mini-label">SUGGESTED TASK</span>
       </div>
-      {editing ? (
+      {editing && pending ? (
         <form
           onSubmit={(e) => {
             e.preventDefault();
             if (!draft.title.trim()) return;
-            onChange({ ...draft, title: draft.title.trim() });
-            setEditing(false);
+            void submit({ ...draft, title: draft.title.trim() }, "edit");
           }}>
           <label>
-            Task
+            Title
             <textarea
               required
               value={draft.title}
@@ -44,12 +70,16 @@ export default function TaskCard({
             />
           </label>
           <label>
-            Owner
-            <input
-              value={draft.owner}
-              onChange={(e) => setDraft({ ...draft, owner: e.target.value })}
+            Description
+            <textarea
+              placeholder="Optional description"
+              value={draft.description || ""}
+              onChange={(e) =>
+                setDraft({ ...draft, description: e.target.value })
+              }
             />
           </label>
+
           <label>
             Priority
             <select
@@ -67,13 +97,18 @@ export default function TaskCard({
               ))}
             </select>
           </label>
+          <p className="muted">Assign the task in Jira after approval.</p>
           <div className="row">
-            <button className="button primary small" type="submit">
+            <button
+              className="button primary small"
+              type="submit"
+              disabled={saving}>
               Save changes
             </button>
             <button
               className="button secondary small"
               type="button"
+              disabled={saving}
               onClick={() => setEditing(false)}>
               Cancel
             </button>
@@ -82,10 +117,39 @@ export default function TaskCard({
       ) : (
         <>
           <h3>{task.title}</h3>
-          <div className="task-meta">
+          {task.proposalType && (
+            <p className="mini-label">
+              {task.proposalType === "update"
+                ? `Update ${task.existingIssueKey || "existing issue"}`
+                : "Create new task"}
+            </p>
+          )}
+          {task.description && (
+            <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+              {task.description
+                .replace(/\[Ticket2Go update from item [^\]]+\]/g, "")
+                .trim()}
+            </p>
+          )}
+          {task.rationale && (
+            <details>
+              <summary>Why this was suggested</summary>
+              <p>{task.rationale}</p>
+            </details>
+          )}
+          <div className="task-meta mt-2">
             <span>
-              <small>OWNER</small>
-              {task.owner || "Not specified"}
+              <small>
+                {pending && task.proposalType === "create"
+                  ? "DESTINATION"
+                  : "JIRA STATUS"}
+              </small>
+              {pending && task.proposalType === "create"
+                ? "Active sprint (backlog if none)"
+                : task.jiraStatus ||
+                  (task.status === "rejected" && task.proposalType === "create"
+                    ? "No Jira ticket"
+                    : "Unknown")}
             </span>
             <span>
               <small>PRIORITY</small>
@@ -93,37 +157,76 @@ export default function TaskCard({
             </span>
           </div>
           <div className="task-actions">
-            <button className="text-button" onClick={edit}>
-              <Icon name="edit" size={15} /> Edit
-            </button>
-            {task.status === "pending" ? (
+            {pending && (
+              <button
+                className="text-button"
+                onClick={edit}
+                disabled={saving || !task.reviewToken}>
+                <Icon name="edit" size={15} /> Edit
+              </button>
+            )}
+            {pending ? (
               <div className="row">
                 <button
                   className="button secondary small"
-                  onClick={() => onChange({ ...task, status: "rejected" })}>
+                  disabled={saving || !task.reviewToken}
+                  onClick={() => void submit(task, "reject")}>
                   <Icon name="close" size={15} /> Reject
                 </button>
                 <button
                   className="button primary small"
-                  onClick={() => onChange({ ...task, status: "approved" })}>
+                  disabled={saving || !task.reviewToken}
+                  onClick={() => void submit(task, "approve")}>
                   <Icon name="check" size={15} /> Approve
                 </button>
               </div>
-            ) : (
-              <button
-                className="text-button"
-                onClick={() => onChange({ ...task, status: "pending" })}>
-                Move back to review
-              </button>
-            )}
+            ) : jiraUrl ? (
+              <a
+                className="button primary small"
+                href={jiraUrl}
+                target="_blank"
+                rel="noopener noreferrer">
+                Open in Jira <Icon name="arrow" size={15} />
+              </a>
+            ) : null}
           </div>
           {task.status === "rejected" && (
             <p className="rejection-note">
-              Not proceeding with this suggestion. You can review it again
-              anytime.
+              Rejected. No changes were sent to Jira.
+            </p>
+          )}
+          {task.status === "approved" &&
+            task.executionStatus === "in_progress" && (
+              <p role="status">
+                Approval saved. Jira completion is not yet confirmed. Refresh
+                status; if it remains unchanged, check Jira before taking
+                further action.
+              </p>
+            )}
+          {task.status === "approved" && task.executionStatus === "blocked" && (
+            <p className="error">
+              Approval saved, but Jira completion could not be confirmed. Check
+              Jira before taking further action.
+            </p>
+          )}
+          {pending && task.proposalType === "update" && (
+            <p className="subtle-note">
+              Approval updates the existing Jira issue's description and any
+              selected priority. Its sprint assignment stays unchanged.
             </p>
           )}
         </>
+      )}
+      {task.placementMessage && (
+        <p className="subtle-note" role="status">
+          {task.placementMessage}
+        </p>
+      )}
+      {saving && <p role="status">Saving…</p>}
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
       )}
     </article>
   );

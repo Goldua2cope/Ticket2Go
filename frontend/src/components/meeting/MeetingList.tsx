@@ -20,16 +20,16 @@ export default function MeetingList({
           <span className="meeting-row-info">
             <strong>{meeting.title}</strong>
             <small>
-              {new Date(meeting.startedAt).toLocaleString(undefined, {
+              {meeting.startedAt ? new Date(meeting.startedAt).toLocaleString(undefined, {
                 month: "short",
                 day: "numeric",
                 hour: "2-digit",
                 minute: "2-digit",
-              })}{" "}
+              }) : "Date not recorded"}{" "}
               · {meeting.tasks.length} suggested tasks
             </small>
           </span>
-          <span className="badge approved">Completed</span>
+          <span className="badge neutral">{meeting.processingStatus || "completed"}</span>
           <Icon name="arrow" size={18} />
         </button>
       ))}

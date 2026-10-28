@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Meeting, Task, TaskStatus } from "../lib/types";
+import type { Meeting, Task, TaskStatus, TaskAction } from "../lib/types";
 import TaskCard from "../components/tasks/TaskCard";
 import EmptyState from "../components/ui/EmptyState";
 export default function TasksPage({
@@ -7,7 +7,7 @@ export default function TasksPage({
   onTaskChange,
 }: {
   meetings: Meeting[];
-  onTaskChange: (meetingId: string, task: Task) => void;
+  onTaskChange: (meetingId: string, task: Task, action: TaskAction) => Promise<void>;
 }) {
   const [filter, setFilter] = useState<TaskStatus | "all">("all");
   const tasks = meetings.flatMap((meeting) =>
@@ -56,7 +56,7 @@ export default function TasksPage({
               <p className="task-source">{meeting.title}</p>
               <TaskCard
                 task={task}
-                onChange={(updated) => onTaskChange(meeting.id, updated)}
+                onChange={(updated, action) => onTaskChange(meeting.id, updated, action)}
               />
             </div>
           ))}
@@ -71,13 +71,12 @@ export default function TasksPage({
           description={
             tasks.length
               ? "Choose another filter to see your task suggestions."
-              : "Finish a meeting to see tasks from its AI summary here."
+              : "Task suggestions appear here after a completed meeting has been analyzed."
           }
         />
       )}
       <p className="subtle-note">
-        Decisions are saved on this browser. Approving a task does not create a
-        Jira ticket.
+        Decisions are saved to your workspace. Approval sends the task to Jira; further changes happen there.
       </p>
     </>
   );

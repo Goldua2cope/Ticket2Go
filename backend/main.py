@@ -42,12 +42,16 @@ from backend.meeting_assistant import (
 from backend.meeting_ingestion import ingest_meeting_transcript, ingest_meeting_summary
 from backend.jira_sync import sync_jira_to_cosmos
 from backend.ticket_suggestion.routes import router as suggestion_router
+from backend.ticket_suggestion.review_routes import router as review_router
+from backend.meeting_routes import router as meeting_router
 
 logger = logging.getLogger("uvicorn.error")
 
 # Initialize Application
 app = FastAPI(lifespan=lifespan)
 app.include_router(suggestion_router)
+app.include_router(review_router)
+app.include_router(meeting_router)
 
 
 class MeetingAssistantMessage(BaseModel):

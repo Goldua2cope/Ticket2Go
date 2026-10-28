@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import type { Meeting } from "../lib/types";
-import { parseSuggestions } from "../lib/suggestions";
 
 export function useRecorder(onComplete: (meeting: Meeting) => void) {
   const [status, setStatus] = useState<
@@ -169,9 +168,10 @@ export function useRecorder(onComplete: (meeting: Meeting) => void) {
               id: message.meeting_id,
               title: `Meeting · ${new Date(startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`,
               startedAt,
+              processingStatus: "completed",
               transcript: receivedTranscript,
               summary: message.summary,
-              tasks: parseSuggestions(message.summary),
+              tasks: [],
             });
             setStatus("idle");
           } else if (message.type === "error") {

@@ -28,6 +28,7 @@ COSMOS_CONTAINER = "knowledge_container"
 JIRA_BASE_URL="https://ticket-to-go.atlassian.net"
 JIRA_EMAIL="robin.stjarne@salt.dev"
 JIRA_PROJECT_KEY="SCRUM"
+JIRA_BOARD_ID = 1
 
 # Mapping {variable name : secret in Key vault}
 VAULT_SECRETS = {
@@ -115,6 +116,7 @@ async def lifespan(app: FastAPI):
         app.state.jira_base_url = JIRA_BASE_URL.rstrip("/")
         app.state.jira_email = JIRA_EMAIL
         app.state.jira_project_key = JIRA_PROJECT_KEY
+        app.state.jira_board_id = JIRA_BOARD_ID
         app.state.jira_api_token = secrets["jira_api_token"]
 
         yield

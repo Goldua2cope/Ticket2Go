@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS meetings (
 CREATE TABLE IF NOT EXISTS meeting_items (
     item_id UUID PRIMARY KEY,
     meeting_id UUID NOT NULL REFERENCES meetings(meeting_id),
-    item_type TEXT NOT NULL 
+    item_type TEXT NOT NULL
         CHECK (item_type IN ('action', 'decision', 'question')),
     content TEXT NOT NULL,
     evidence_refs TEXT,
@@ -103,6 +103,12 @@ CREATE TABLE IF NOT EXISTS problem_assessments (
 COMMIT;
 
 SELECT * FROM meetings;
+
 SELECT * FROM meeting_items;
 SELECT * FROM jira_issue_cache;
 SELECT * FROM ticket_proposals;
+
+SELECT * FROM problem_assessments;
+
+UPDATE ticket_proposals SET review_status='pending'
+WHERE proposal_id='ced88b4a-3e84-55af-b26f-f197fbecda7d';

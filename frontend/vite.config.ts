@@ -7,6 +7,16 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   server: {
     proxy: {
+      '/proposals': {
+        target: 'http://localhost:8000',
+        timeout: 150_000,
+        proxyTimeout: 150_000,
+      },
+      '/meetings': {
+        target: 'http://localhost:8000',
+        timeout: 360_000,
+        proxyTimeout: 360_000,
+      },
       '/ws/transcribe': {
         target: 'http://localhost:8000',
         ws: true,

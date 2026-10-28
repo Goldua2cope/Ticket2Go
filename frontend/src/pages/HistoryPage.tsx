@@ -1,7 +1,7 @@
 import { useState } from "react";
-import type { Meeting, Task } from "../lib/types";
+import type { Meeting, Task, TaskAction } from "../lib/types";
 import MeetingList from "../components/meeting/MeetingList";
-import MeetingSummary from "../components/summary/MeetingSummary";
+import SavedMeetingSummary from "../components/summary/SavedMeetingSummary";
 import TaskSuggestions from "../components/tasks/TaskSuggestions";
 import EmptyState from "../components/ui/EmptyState";
 export default function HistoryPage({
@@ -10,12 +10,14 @@ export default function HistoryPage({
   onSelect,
   onTaskChange,
   onStart,
+  suggestionsLoading = false,
 }: {
   meetings: Meeting[];
   selectedId: string | null;
   onSelect: (id: string | null) => void;
-  onTaskChange: (meetingId: string, task: Task) => void;
+  onTaskChange: (meetingId: string, task: Task, action: TaskAction) => Promise<void>;
   onStart: () => void;
+  suggestionsLoading?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const selected = meetings.find((m) => m.id === selectedId);
@@ -32,20 +34,21 @@ export default function HistoryPage({
             <span className="eyebrow">CONVERSATION CAPTURED</span>
             <h1>{selected.title}</h1>
             <p className="muted">
-              {new Date(selected.startedAt).toLocaleString()}
+              {selected.startedAt ? new Date(selected.startedAt).toLocaleString() : "Date not recorded"}
             </p>
           </div>
-          <span className="badge approved">Completed</span>
+          <span className="badge neutral">{selected.processingStatus || "completed"}</span>
         </div>
-        <MeetingSummary summary={selected.summary} />
+        <SavedMeetingSummary key={selected.id} meeting={selected} />
         <TaskSuggestions
           tasks={selected.tasks}
-          onChange={(task) => onTaskChange(selected.id, task)}
+          loading={suggestionsLoading}
+          onChange={(task, action) => onTaskChange(selected.id, task, action)}
         />
       </>
     );
   const filtered = meetings.filter((m) =>
-    `${m.title} ${m.transcript} ${m.summary}`
+    `${m.title} ${m.tasks.map((task) => task.title).join(" ")}`
       .toLowerCase()
       .includes(query.toLowerCase()),
   );
@@ -64,7 +67,7 @@ export default function HistoryPage({
         Search meetings
         <input
           type="search"
-          placeholder="Search titles, transcripts, or summaries…"
+          placeholder="Search meeting titles or suggested tasks…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -82,7 +85,7 @@ export default function HistoryPage({
             description={
               query
                 ? "Try another word from the title or conversation."
-                : "Your completed meetings will appear here, saved on this browser."
+                : "Your saved meetings will appear here from the database."
             }
             onStart={query ? undefined : onStart}
           />
