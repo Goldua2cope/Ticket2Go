@@ -81,3 +81,40 @@ async def update_meeting(
         raise MeetingStorageError(
             "Could not update the meeting in PostgreSQL. Any uploaded transcript remains in Blob Storage."
         ) from None
+
+
+async def list_meetings_with_proposals(config: State, limit: int, offset: int) -> dict:
+    """Two reads per page, including meetings with no proposals and each proposal once."""
+    from backend.postgres.proposal_reviews import serialize
+
+    async with config.postgres.acquire() as connection:
+        async with connection.transaction(isolation="repeatable_read", readonly=True):
+            rows = await connection.fetch(
+                """SELECT meeting_id, title, meeting_date, processing_status FROM meetings
+                   ORDER BY meeting_date DESC NULLS LAST, meeting_id DESC
+                   LIMIT $1 OFFSET $2""", limit + 1, offset,
+            )
+            has_more = len(rows) > limit
+            meetings = []
+            by_id = {}
+            for row in rows[:limit]:
+                meeting = dict(row)
+                meeting["meeting_id"] = str(row["meeting_id"])
+                meeting["proposals"] = []
+                meetings.append(meeting)
+                by_id[row["meeting_id"]] = meeting
+            if meetings:
+                proposals = await connection.fetch(
+                    """SELECT p.*, mi.meeting_id AS source_meeting_id,
+                              c.jira_url, c.status AS jira_status
+                       FROM ticket_proposals p
+                       JOIN meeting_items mi ON mi.item_id=p.item_id
+                       LEFT JOIN jira_issue_cache c ON c.issue_key=p.jira_issue_key
+                       WHERE mi.meeting_id=ANY($1::uuid[])
+                       ORDER BY p.created_at, p.proposal_id""", list(by_id),
+                )
+                for row in proposals:
+                    proposal = dict(row)
+                    source_id = proposal.pop("source_meeting_id")
+                    by_id[source_id]["proposals"].append(serialize(proposal))
+    return {"meetings": meetings, "next_offset": offset + limit if has_more else None}

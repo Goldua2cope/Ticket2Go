@@ -18,7 +18,9 @@ class JiraCacheStorageError(Exception):
     """A database error safe to display to the user."""
 
 
-async def upsert_issues(issues: list[dict[str, Any]], synced_at: datetime, config: State) -> int:
+async def upsert_issues(
+    issues: list[dict[str, Any]], synced_at: datetime, config: State
+) -> int:
     """Insert or refresh one cache row per issue and return how many were written.
 
     `issues` are the documents built by jira_sync._transform_issue.
@@ -38,7 +40,7 @@ async def upsert_issues(issues: list[dict[str, Any]], synced_at: datetime, confi
                 _parse_jira_timestamp(issue.get("jira_updated_at")) or synced_at,
                 synced_at,
                 issue["jira_url"],
-                issue["labels"]
+                issue.get("labels") or [],
             )
         )
 
@@ -66,7 +68,9 @@ async def upsert_issues(issues: list[dict[str, Any]], synced_at: datetime, confi
                     )
     except Exception as exc:
         logger.warning("Jira issue cache upsert failed (%s)", type(exc).__name__)
-        raise JiraCacheStorageError("Could not save Jira issues to PostgreSQL.") from None
+        raise JiraCacheStorageError(
+            "Could not save Jira issues to PostgreSQL."
+        ) from None
 
     return len(rows)
 

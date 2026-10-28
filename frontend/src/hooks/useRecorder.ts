@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import MeetingSummary from "./MeetingSummary";
+import type { Meeting } from "../lib/types";
 
-export default function AudioRecorder() {
+export function useRecorder(onComplete: (meeting: Meeting) => void) {
   const [status, setStatus] = useState<
     "idle" | "starting" | "recording" | "stopping" | "saving" | "summarizing"
   >("idle");
@@ -42,6 +42,8 @@ export default function AudioRecorder() {
       return;
     }
 
+    const startedAt = new Date().toISOString();
+    let receivedTranscript = "";
     setStatus("starting");
     setTranscript("");
     setPartial("");
@@ -116,6 +118,9 @@ export default function AudioRecorder() {
             typeof message.isFinal === "boolean"
           ) {
             if (message.isFinal) {
+              receivedTranscript = [receivedTranscript, message.text]
+                .filter(Boolean)
+                .join(" ");
               setTranscript((previous) =>
                 [previous, message.text].filter(Boolean).join(" "),
               );
@@ -159,6 +164,15 @@ export default function AudioRecorder() {
             setPartial("");
             setSavedMeetingId(message.meeting_id);
             setSummary(message.summary);
+            onComplete({
+              id: message.meeting_id,
+              title: `Meeting · ${new Date(startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`,
+              startedAt,
+              processingStatus: "completed",
+              transcript: receivedTranscript,
+              summary: message.summary,
+              tasks: [],
+            });
             setStatus("idle");
           } else if (message.type === "error") {
             fail(
@@ -250,61 +264,14 @@ export default function AudioRecorder() {
     }
   }
 
-  return (
-    <section className="mx-auto max-w-lg space-y-4 p-6">
-      <h1 className="text-2xl font-semibold">Record your meeting</h1>
-      <div className="flex gap-3">
-        <button
-          className="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
-          onClick={startRecording}
-          disabled={status !== "idle"}>
-          Start recording
-        </button>
-        <button
-          className="rounded border px-4 py-2 disabled:opacity-50"
-          onClick={stopRecording}
-          disabled={status !== "recording"}>
-          Stop recording
-        </button>
-      </div>
-      <p role="status">
-        {status === "starting"
-          ? "Connecting microphone and transcription server…"
-          : status === "recording"
-            ? "Recording…"
-            : status === "stopping"
-              ? "Finishing transcript…"
-              : status === "saving"
-                ? "Saving transcript…"
-                : status === "summarizing"
-                  ? "Generating summary…"
-                  : "Ready to record"}
-      </p>
-      {error && (
-        <p role="alert" className="text-red-700">
-          {error}
-        </p>
-      )}
-      {savedMeetingId && (
-        <p role="status" className="text-green-700">
-          Transcript saved. Meeting ID: {savedMeetingId}
-        </p>
-      )}
-      <div className="space-y-2 rounded border border-gray-300 p-4">
-        <h2 className="text-lg font-semibold">Live transcript</h2>
-        <p
-          aria-live="polite"
-          aria-atomic="true"
-          className="whitespace-pre-wrap">
-          {transcript}
-          {transcript && partial ? " " : ""}
-          <span className="text-gray-500">{partial}</span>
-          {!transcript &&
-            !partial &&
-            "Your words will appear here when the transcription server is connected."}
-        </p>
-      </div>
-      {summary && <MeetingSummary summary={summary} />}
-    </section>
-  );
+  return {
+    status,
+    error,
+    transcript,
+    partial,
+    savedMeetingId,
+    summary,
+    startRecording,
+    stopRecording,
+  };
 }

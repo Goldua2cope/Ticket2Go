@@ -7,6 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test:reviews": "node scripts/test-task-reviews.mjs",
+    "test:meetings": "node scripts/test-meeting-api.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

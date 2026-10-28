@@ -11,7 +11,7 @@ LLM without an independent approval check.
 from __future__ import annotations
 
 from datetime import date, datetime, time, timezone
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 from urllib.parse import quote
 
 import httpx
@@ -77,13 +77,14 @@ async def _jira_request(
     *,
     json_body: dict[str, Any] | None = None,
     params: dict[str, Any] | None = None,
+    api: Literal["api/3", "agile/1.0"] = "api/3",
 ) -> dict[str, Any]:
     """Perform one Jira API request without retrying potentially non-idempotent writes."""
     async with _jira_client(state) as client:
         try:
             response = await client.request(
                 method,
-                f"/rest/api/3/{path.lstrip('/')}",
+                f"/rest/{api}/{path.lstrip('/')}",
                 json=json_body,
                 params=params,
             )
@@ -672,6 +673,18 @@ async def update_jira_issue(
     return {"key": issue_key.strip(), "updated_fields": sorted(fields)}
 
 
+async def append_jira_comment(state: State, issue_key: str, text: str) -> dict[str, Any]:
+    """Append approved meeting information without overwriting Jira content."""
+    if not issue_key or not text.strip():
+        raise ValueError("An issue key and comment text are required.")
+    await _require_issue_in_configured_project(state, issue_key)
+    await _jira_request(
+        state, "POST", f"issue/{quote(issue_key, safe='')}/comment",
+        json_body={"body": _plain_text_to_adf(text)},
+    )
+    return {"key": issue_key}
+
+
 # Retrieves the workflow transitions currently available for a Jira issue.
 async def get_jira_transitions(state: State, issue_key: str) -> list[dict[str, Any]]:
     """Return workflow transitions available for the current user on an issue."""
@@ -992,4 +1005,50 @@ async def search_meeting_history(
         top_k=top_k,
         data_source="meeting_history",
         content_type="meeting_summary" if summaries_only else None,
+    )
+
+
+async def get_active_sprint(state: State) -> dict[str, Any] | None:
+    """Return the single active sprint on the configured board, or None.
+
+    Errors and ambiguous parallel sprints must not be mistaken for an empty board.
+    """
+    board_id = getattr(state, "jira_board_id", None)
+    if type(board_id) is not int or board_id < 1:
+        raise ValueError("A positive jira_board_id is required.")
+    start = 0
+    found: dict[int, dict[str, Any]] = {}
+    while True:
+        page = await _jira_request(
+            state, "GET", f"board/{board_id}/sprint", api="agile/1.0",
+            params={"state": "active", "startAt": start, "maxResults": 50},
+        )
+        values = page.get("values")
+        if not isinstance(values, list):
+            raise JiraActionError("Jira returned an invalid sprint list.")
+        for sprint in values:
+            if (not isinstance(sprint, dict) or type(sprint.get("id")) is not int
+                    or sprint["id"] < 1 or sprint.get("state") != "active"):
+                raise JiraActionError("Jira returned an invalid active sprint.")
+            found[sprint["id"]] = sprint
+        if len(found) > 1:
+            raise JiraActionError("More than one sprint is active on the configured board. Choose a destination in Jira.")
+        start += len(values)
+        total = page.get("total")
+        if page.get("isLast") is True or (type(total) is int and start >= total):
+            return next(iter(found.values()), None)
+        if not values or start > 1000:
+            raise JiraActionError("Jira sprint pagination could not be completed.")
+
+
+async def place_new_issue(state: State, issue_key: str, sprint: dict[str, Any] | None) -> None:
+    """Assign a newly created issue to the chosen sprint, or the backlog.
+
+    Only called by the approved create flow; existing-ticket updates never use it.
+    Jira workflow status is left unchanged. These use the Jira Software Agile API.
+    """
+    await _require_issue_in_configured_project(state, issue_key)
+    path = f"sprint/{sprint['id']}/issue" if sprint else "backlog/issue"
+    await _jira_request(
+        state, "POST", path, api="agile/1.0", json_body={"issues": [issue_key]},
     )
