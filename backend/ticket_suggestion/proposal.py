@@ -25,6 +25,7 @@ from .schemas import (
     HistoricalContext,
     ItemType,
     MeetingItem,
+    Priority,
     ProblemAssessment,
     ProposalOutcome,
     ProposalOutput,
@@ -58,7 +59,7 @@ Choose exactly one outcome for the focus item:
 
 - **create:** Propose a new Jira issue for new or untracked work.
 - **update:** Propose a specific addition to one existing Jira issue.
-- **revise:** Change one or more pending suggestions in `prior_ticket_proposals` (unreviewed drafts from earlier meetings). Put their IDs in `revise_proposal_ids` and describe the changes in `new_information`.
+- **revise:** Change one or more pending suggestions in `prior_ticket_proposals` (unreviewed drafts from earlier meetings).
 - **none:** Make no suggestion because the item is informational, evidence is insufficient, or the work is already adequately tracked.
 
 ## Decision rules
@@ -90,63 +91,119 @@ Apply these rules:
 
 # 2. Write the proposal
 
-Use only source-supported facts. Produce the smallest, clearest, actionable change justified by the evidence. Do not pad descriptions, repeat existing information, or invent detail to make a ticket appear complete.
+Use only source-supported facts. Write the smallest clear change the evidence justifies. Never pad a description or invent detail to make a ticket look complete.
+
+Descriptions are sent to Jira as plain text, one paragraph per line. Use the plain-text labels shown below and start list items with "- ". Do not use Markdown headings, bold, tables, or code formatting.
 
 ## Create
 
-- **Summary:** A specific, actionable, imperative title, maximum 255 characters.
-- **Description:** Three short sections:
-  1. **Steps and requirements:** Concise bullet points describing the work and supported requirements.
-  2. **Acceptance criteria:** Observable completion conditions, only when supported by the sources. Never invent criteria.
-  3. **Open questions:** Only material unresolved questions supported by the context. Do not add generic questions merely because implementation details are unspecified. If none, write "None."
-- Make the task actionable without inventing implementation details, requirements, root causes, or fixes.
-- Include an owner or deadline only when explicitly stated.
+**Summary**
+- An imperative command that starts with a verb, like a good commit message.
+- It must complete the sentence: "To complete this ticket, I need to <summary>."
+- Name the specific object and its context so the ticket is recognizable in a backlog. Aim for under 80 characters; never exceed 255.
+- Do not put owners, deadlines, or status in the summary.
+- Weak: "Transcript language". Strong: "Keep live transcripts in one detected language".
+
+**Description:** Follow this outline. Always include `Story:`. Include any other label only when the sources support at least one line for it, and leave out lines with no supported value. Never write "TBD", "None", or "Not stated".
+
+```
+Story: We need to <task> in order for <who benefits> to <outcome>.
+Acceptance criteria:
+- <condition>
+Context:
+- Owner: <name>
+- Deadline: <date expression>
+- Related: <ISSUE-KEY> (<open or resolved>): <how it relates>
+- Blocked by: <blocker>
+- Open question: <question>
+```
+
+- **Story** explains why the work is needed and for whom. The beneficiary can be end users, developers, the project team, or management. If no beneficiary is supported, use "the team". If no outcome is supported, end the sentence after the task. Keep the list of work out of the story.
+- **Acceptance criteria** define when the ticket is done. List only conditions agreed or explicitly stated in the sources, at most three, each a short, checkable statement that starts with a verb. Leave out implicit criteria such as testing.
+- **Context** holds the stated owner, deadline, related Jira issues, blockers, and open questions. When a resolved problem has returned, reference the earlier issue here, e.g. "Related: SCRUM-12 (resolved): the same problem has returned."
+
+Example:
+
+```
+Summary: Keep live transcripts in one detected language
+Description:
+Story: We need to stop the transcription from mixing Swedish and English in order for meeting participants to get a readable transcript.
+Context:
+- Deadline: Friday this week
+```
 
 ## Update
 
-- **Summary:** A short, specific title describing the change, maximum 255 characters.
-- **Description:** ONLY the new text to append to the existing Jira issue. Never restate, rewrite, summarize, or duplicate existing content.
-- **New information:** State concretely what the current meeting adds or changes. Distinguish new facts, decisions, and commitments from existing context.
-- Append only genuinely new, relevant information. Do not repeat existing scope, owners, deadlines, or decisions unless a change or necessary reconfirmation warrants recording.
-- Do not include proposal IDs, source item IDs, or internal processing commentary in the Jira description.
+The description is appended to an existing Jira issue, so write a short changelog entry, not a new ticket.
+
+**Summary:** An imperative title that names the change, not the issue, e.g. "Record new deadline for demo preparation". The Create length rules apply.
+
+**Description:** Only the text to append, in this outline:
+
+```
+Meeting update:
+- <new fact, decision, or commitment>
+New acceptance criteria:
+- <condition>
+```
+
+- One fact per line. When the old value is known, write "changed from <old> to <new>".
+- Include `New acceptance criteria:` only for criteria agreed in the current meeting.
+- Never restate, summarize, or rewrite existing issue content. Repeat an existing owner, deadline, or decision only when it changed or was explicitly reconfirmed.
+
+**New information:** Required. One or two sentences for the reviewer stating what the current meeting adds that the issue lacks.
 
 ## Revise
 
-- **New information:** State each change concretely, preserving names, dates, deadlines, owners, and other specifics as stated. Example: "Deadline changed to next Wednesday; owner confirmed as Embla."
-- Clearly distinguish established changes from unchanged context. Do not infer that a value changed unless the sources establish it.
-- **Summary and description:** May be `null` if no corresponding change is needed. Change only what is necessary; do not rewrite the entire suggestion.
-- Identify every affected pending proposal in `revise_proposal_ids`.
-- Never revise approved or rejected suggestions.
+Only `new_information` is recorded. It is appended to each pending suggestion as a single line.
+
+- **New information:** One or two short sentences with no line breaks or list items. State each change concretely, preserving names, dates, deadlines, and owners as stated. When the old value is known, write "changed from <old> to <new>". Example: "Deadline changed from Friday to next Wednesday; owner confirmed as Embla."
+- Record only changes the sources establish. Never infer that a value changed.
+- Set `summary` and `description` to `null`.
+- List every affected pending proposal in `revise_proposal_ids`. Never revise approved or rejected suggestions.
 
 ## None
 
-Do not propose a Jira change when evidence is insufficient, the item is informational, or existing tracking already adequately covers the work.
-- Do not turn questions, speculation, tentative ideas, or unresolved proposals into agreed commitments.
-- Preserve uncertainty rather than inventing a decision.
+Do not propose a Jira change when evidence is insufficient, the item is informational, or existing tracking already covers the work.
+
+- Do not turn questions, speculation, tentative ideas, or unresolved proposals into commitments. Preserve uncertainty rather than inventing a decision.
+- Set `summary`, `description`, and `new_information` to `null`.
+- Start the rationale with one of these labels, followed by one sentence:
+  - "Already tracked: <ISSUE-KEY> covers this, and the meeting adds nothing new."
+  - "Informational: <why no work follows>."
+  - "Not enough evidence: <what is missing>."
 
 # 3. Shared requirements
 
+## Writing style
+
+- Give each suggested ticket a priority that can be 'Lowest', 'Low', 'Medium', 'High', 'Highest'. If updating an existing ticket, take over the existing tickets priority if exists. Default to 'Medium' if uncertain.
+- Write the summary, description, and new information in English, even when the meeting was held in another language. Translate date expressions without changing their meaning ("fredag den här veckan" becomes "Friday this week"); do not turn relative dates into calendar dates. Keep names, product terms, and issue keys exactly as written.
+- Write about the work, not the meeting. Avoid phrases such as "It was discussed that", "The team mentioned", or "In the meeting".
+- Use complete, neutral sentences. Put one fact on each line, and state each fact once.
+- Use the same term for the same thing throughout. When a Jira issue already exists, use its terms.
+- Do not include proposal IDs, item IDs, document IDs, or internal processing commentary in the summary or description.
+
 ## Grounding and precision
 
-- Use only facts supported by the available sources. Never invent requirements, acceptance criteria, root causes, fixes, owners, deadlines, or implementation details.
-- Include owners and deadlines only when explicitly stated. Preserve names and date expressions accurately; do not infer missing details.
-- Distinguish missing information from a genuine open question. Ask only questions that materially affect implementation, scope, or completion.
-- Use earlier meetings and Jira as context, but do not repeat historical information unless necessary for the proposed change.
-- Keep output concise and non-redundant. Each fact should appear only where it adds value.
+- Use only facts supported by the sources. Never invent requirements, acceptance criteria, root causes, fixes, owners, deadlines, or implementation details.
+- Include owners and deadlines only when explicitly stated. Do not infer missing details.
+- Distinguish missing information from an open question. Record an open question only when it materially affects implementation, scope, or completion.
+- Use earlier meetings and Jira as context, but repeat historical information only when the proposed change needs it.
 
 ## Rationale
 
-Provide one to three sentences explaining why the outcome was chosen. Cite the decisive evidence, explain why the work warrants this outcome, and distinguish new work or information from existing tracking where relevant. For a repeated suggestion after a prior rejection, explain what new evidence justifies raising it again.
+One to three sentences for the human reviewer explaining why this outcome was chosen. Cite the decisive evidence and distinguish new work or information from existing tracking where relevant. For a repeated suggestion after a prior rejection, explain what new evidence justifies raising it again. For `none`, follow the labels in the None section.
 
 ## Evidence
 
-- Include verbatim quotes with their corresponding document IDs.
-- Include at least one quote from the current meeting, plus relevant quotes from earlier meetings or Jira when they support the decision.
-- Never paraphrase quotes or fabricate evidence. Do not include irrelevant historical evidence when no earlier source matters.
+- Include verbatim quotes, in their original language, with their document IDs.
+- Include at least one quote from the current meeting, plus quotes from earlier meetings or Jira when they support the decision.
+- Never paraphrase or fabricate quotes. Leave out historical evidence that does not matter to the decision.
 
 ## Consistency
 
-Compare the current meeting with existing Jira content, prior meeting records, and pending proposals before deciding whether to create, update, revise, or do nothing. Ensure the chosen outcome and written content reflect the same decision.
+Compare the current meeting with existing Jira content, earlier meeting records, and pending proposals before choosing an outcome. Make sure the outcome and the written content reflect the same decision.
 
 When evidence is ambiguous, preserve uncertainty rather than presenting assumptions as facts.
 """
@@ -337,6 +394,9 @@ class ProposalGenerator:
         if assessment is not None:
             evidence = merge_evidence(evidence, assessment.evidence)
 
+        # The model may return null; the prompt says to default to Medium.
+        priority = output.priority or Priority.MEDIUM
+
         return TicketProposal(
             proposal_id=make_proposal_id(item.item_id),
             item_id=item.item_id,
@@ -347,6 +407,7 @@ class ProposalGenerator:
             rationale=rationale,
             evidence=evidence,
             related_meeting_ids=_related_meeting_ids(evidence, assessment),
+            priority=priority
         )
 
 

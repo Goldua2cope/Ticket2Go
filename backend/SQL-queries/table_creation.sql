@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS jira_issue_cache (
 );
 
 ALTER TABLE jira_issue_cache ADD COLUMN IF NOT EXISTS jira_url TEXT NOT NULL;
+ALTER TABLE jira_issue_cache ADD COLUMN IF NOT EXISTS labels TEXT[];
+-- labels was first added as TEXT; this converts it and is a no-op once it is TEXT[].
+ALTER TABLE jira_issue_cache ALTER COLUMN labels TYPE TEXT[] USING labels::TEXT[];
+
 
 CREATE TABLE IF NOT EXISTS ticket_proposals (
     proposal_id UUID PRIMARY KEY,
@@ -81,6 +85,8 @@ ALTER TABLE ticket_proposals
     DROP CONSTRAINT IF EXISTS ticket_proposals_item_id_fkey,
     ADD CONSTRAINT ticket_proposals_item_id_fkey
         FOREIGN KEY (item_id) REFERENCES meeting_items(item_id) ON DELETE CASCADE;
+ALTER TABLE ticket_proposals ADD COLUMN IF NOT EXISTS labels TEXT[];
+ALTER TABLE ticket_proposals ALTER COLUMN labels TYPE TEXT[] USING labels::TEXT[];
 
 
 
