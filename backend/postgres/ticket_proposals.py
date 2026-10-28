@@ -56,9 +56,9 @@ async def _upsert_proposal(connection, proposal: TicketProposal):
         """
         INSERT INTO ticket_proposals (
             proposal_id, item_id, proposal_type, summary, description,
-            jira_issue_key, rationale, evidence, related_meeting_ids
+            jira_issue_key, rationale, evidence, related_meeting_ids, priority
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::uuid[])
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::uuid[], $10)
         ON CONFLICT (proposal_id) DO UPDATE SET
             proposal_type = EXCLUDED.proposal_type,
             summary = EXCLUDED.summary,
@@ -66,11 +66,12 @@ async def _upsert_proposal(connection, proposal: TicketProposal):
             jira_issue_key = EXCLUDED.jira_issue_key,
             rationale = EXCLUDED.rationale,
             evidence = EXCLUDED.evidence,
-            related_meeting_ids = EXCLUDED.related_meeting_ids
+            related_meeting_ids = EXCLUDED.related_meeting_ids,
+            priority = EXCLUDED.priority
         WHERE ticket_proposals.review_status = 'pending'
         RETURNING proposal_id, item_id, proposal_type, summary, description,
                   assignee_account_id, review_status, execution_status,
-                  jira_issue_key, rationale, evidence, related_meeting_ids
+                  jira_issue_key, rationale, evidence, related_meeting_ids, priority
         """,
         proposal.proposal_id,
         proposal.item_id,
@@ -83,6 +84,7 @@ async def _upsert_proposal(connection, proposal: TicketProposal):
         proposal.rationale,
         evidence,
         proposal.related_meeting_ids,
+        proposal.priority,
     )
 
 
@@ -96,7 +98,9 @@ async def apply_revisions(
     The change is appended as a dated note, never rewritten, so two changes to
     the same suggestion can't overwrite each other. A marker per revising item
     stops a re-run from appending the same note twice. Suggestions the user
-    already approved or rejected are left untouched.
+    already approved or rejected are left untouched, and so are suggestions
+    from a meeting held on or after the revising meeting (e.g. when an older
+    meeting is re-run).
     """
     if not revisions:
         return []
@@ -140,9 +144,18 @@ async def _append_revision(connection, revision: ProposalRevision, meeting_date:
         WHERE proposal_id = $1
           AND review_status = 'pending'
           AND position($5 IN COALESCE(description, '')) = 0
+          -- Only a later meeting may revise. If either date is missing, skip.
+          AND EXISTS (
+              SELECT 1
+              FROM meeting_items AS mi
+              JOIN meetings AS origin ON origin.meeting_id = mi.meeting_id
+              JOIN meetings AS reviser ON reviser.meeting_id = $4::uuid
+              WHERE mi.item_id = ticket_proposals.item_id
+                AND origin.meeting_date < reviser.meeting_date
+          )
         RETURNING proposal_id, item_id, proposal_type, summary, description,
                   assignee_account_id, review_status, execution_status,
-                  jira_issue_key, rationale, evidence, related_meeting_ids
+                  jira_issue_key, rationale, evidence, related_meeting_ids, priority
         """,
         revision.proposal_id,
         note,
@@ -185,7 +198,7 @@ async def fetch_related_proposals(
         rows = await config.postgres.fetch(
             """
             SELECT p.proposal_id, p.item_id, p.proposal_type, p.summary, p.description,
-                   p.review_status, p.execution_status, p.jira_issue_key,
+                   p.review_status, p.execution_status, p.jira_issue_key, p.priority,
                    (p.review_status = 'edited') AS edited_by_user
             FROM ticket_proposals AS p
             WHERE p.item_id = ANY($1::uuid[])

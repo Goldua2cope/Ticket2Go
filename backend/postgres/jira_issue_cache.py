@@ -38,6 +38,7 @@ async def upsert_issues(issues: list[dict[str, Any]], synced_at: datetime, confi
                 _parse_jira_timestamp(issue.get("jira_updated_at")) or synced_at,
                 synced_at,
                 issue["jira_url"],
+                issue["labels"]
             )
         )
 
@@ -49,16 +50,17 @@ async def upsert_issues(issues: list[dict[str, Any]], synced_at: datetime, confi
                         """
                         INSERT INTO jira_issue_cache (
                             issue_key, summary, project_key, status,
-                            updated_at, synced_at, jira_url
+                            updated_at, synced_at, jira_url, labels
                         )
-                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                         ON CONFLICT (issue_key) DO UPDATE SET
                             summary = EXCLUDED.summary,
                             project_key = EXCLUDED.project_key,
                             status = EXCLUDED.status,
                             updated_at = EXCLUDED.updated_at,
                             synced_at = EXCLUDED.synced_at,
-                            jira_url = EXCLUDED.jira_url
+                            jira_url = EXCLUDED.jira_url,
+                            labels = EXCLUDED.labels
                         """,
                         rows,
                     )

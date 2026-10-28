@@ -32,6 +32,12 @@ class Severity(StrEnum):
     HIGH = "high"
     CRITICAL = "critical"
 
+class Priority(StrEnum):
+    LOWEST = 'Lowest'
+    LOW = 'Low'
+    MEDIUM = 'Medium'
+    HIGH = 'High'
+    HIGHEST = 'Highest'
 
 class EvidenceSource(StrEnum):
     TRANSCRIPT = "meeting_transcript"
@@ -217,7 +223,7 @@ class ProposalOutput(BaseModel):
         description=(
             "update: what this meeting adds that the issue lacks. revise: the change "
             "to record on the pending suggestions, stated concretely (e.g. 'Deadline "
-            "changed to next Wednesday; owner confirmed as Embla'). Null otherwise."
+            "changed to next Wednesday; owner confirmed as Peter'). Null otherwise."
         ),
     )
     revise_proposal_ids: list[str] = Field(
@@ -228,6 +234,9 @@ class ProposalOutput(BaseModel):
     )
     rationale: str = Field(description="Why this outcome, for the human reviewer.")
     evidence: list[QuoteOutput]
+    priority: Priority | None = Field(
+        description="create: defines its importance in relation to other issues"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +299,7 @@ class PriorProposal(BaseModel):
     execution_status: str
     existing_issue_key: str | None = None
     jira_issue_key: str | None = None
+    priority: Priority | None = None
     edited_by_user: bool = False
 
 
@@ -416,6 +426,7 @@ class TicketProposal(BaseModel):
     rationale: str
     evidence: list[EvidenceRef] = Field(min_length=1)
     related_meeting_ids: list[UUID] = Field(default_factory=list)
+    priority: Priority | None = None
 
 
 class Abstention(BaseModel):
@@ -468,6 +479,10 @@ class RunStatus(BaseModel):
     candidates: int = 0
     proposals_registered: int = 0
     proposals_revised: int = 0
+    # Revisions the model chose but that were not written: the target was no
+    # longer pending, already had this item's note, came from a later meeting,
+    # or saving failed. Counts proposal changes, not items.
+    revisions_skipped: int = 0
     skipped_already_reviewed: int = 0
     abstentions: int = 0
     failures: int = 0

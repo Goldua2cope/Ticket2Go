@@ -261,13 +261,15 @@ class SuggestionService:
             revised = []
             revision_failed = True
         status.proposals_revised = len(revised)
+        applied_revisions = _applied_revisions(revisions, revised)
+        status.revisions_skipped = len(revisions) - len(applied_revisions)
 
         if status.candidates and status.failures == status.candidates:
             status.outcome = RunOutcome.FAILED
         elif status.failures or report.windows_failed or revision_failed:
             status.outcome = RunOutcome.PARTIAL
         return _finish(meeting_id, _merge_rows(registered, revised), status, abstentions,
-                       _applied_revisions(revisions, revised))
+                       applied_revisions)
 
     async def _process_unit(
         self,
