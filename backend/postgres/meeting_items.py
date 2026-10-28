@@ -91,7 +91,7 @@ async def fetch_items_for_meetings(
             SELECT mi.item_id, mi.meeting_id, mi.item_type, mi.content,
                    mi.severity, m.meeting_date,
                    p.review_status, p.execution_status,
-                   COALESCE(p.jira_issue_key, p.existing_issue_key) AS tracked_issue_key
+                   p.jira_issue_key AS tracked_issue_key
             FROM meeting_items AS mi
             JOIN meetings AS m ON m.meeting_id = mi.meeting_id
             LEFT JOIN ticket_proposals AS p ON p.item_id = mi.item_id
@@ -136,7 +136,7 @@ async def search_items_by_keywords(
             SELECT mi.item_id, mi.meeting_id, mi.item_type, mi.content,
                    mi.severity, m.meeting_date,
                    p.review_status, p.execution_status,
-                   COALESCE(p.jira_issue_key, p.existing_issue_key) AS tracked_issue_key
+                   p.jira_issue_key AS tracked_issue_key
             FROM meeting_items AS mi
             JOIN meetings AS m ON m.meeting_id = mi.meeting_id
             LEFT JOIN ticket_proposals AS p ON p.item_id = mi.item_id
