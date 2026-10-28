@@ -13,6 +13,28 @@ class TranscriptStorageError(Exception):
     """Storage failure that can be displayed without exposing credentials."""
 
 
+async def load_meeting_transcript(meeting_id: str, config: State) -> dict:
+    """Read the JSON transcript saved by save_meeting_transcript."""
+    blob_name = f"{UUID(meeting_id)}.txt"
+    try:
+        async with asyncio.timeout(20):
+            blob = config.container.get_blob_client(blob_name)
+            download = await blob.download_blob()
+            transcript = json.loads(await download.readall())
+    except (TimeoutError, AzureError, ValueError):
+        raise TranscriptStorageError("Could not read the saved meeting transcript.") from None
+
+    segments = transcript.get("segments") if isinstance(transcript, dict) else None
+    if not isinstance(segments, list) or not any(
+        isinstance(segment, dict)
+        and isinstance(segment.get("text"), str)
+        and segment["text"].strip()
+        for segment in segments
+    ):
+        raise TranscriptStorageError("The saved transcript contains no usable text.")
+    return transcript
+
+
 async def save_meeting_transcript(meeting_id: str, transcript: dict, config: State) -> str:
     """Upload UTF-8 text as <meeting_id>.txt and return the blob name."""
     meeting_id = str(UUID(meeting_id))

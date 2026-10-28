@@ -11,7 +11,12 @@ Later runs:
 Force a full project scan:
     python -m backend.jira_sync.py --full
 
-This script only writes to Cosmos DB. It does not create or modify Jira issues.
+This script writes to Cosmos DB (for vector search) and to the PostgreSQL
+jira_issue_cache table (which ticket_proposals.jira_issue_key references).
+It does not create or modify Jira issues.
+
+If jira_issue_cache is empty, a full scan runs even when a checkpoint exists,
+so the cache gets every issue and not only recently updated ones.
 
 Requires meeting_ingestion.py in the same folder, because it reuses that module's
 Cosmos connection and Azure AI Foundry embedding helpers. Keep .env beside the files.
@@ -40,6 +45,7 @@ import httpx
 from azure.cosmos.exceptions import CosmosResourceNotFoundError
 from fastapi import FastAPI
 from backend.config import lifespan
+from backend.postgres.jira_issue_cache import cache_is_empty, upsert_issues
 
 # Load this folder's .env before importing the shared helper module, which reads
 # Cosmos and embedding settings when it is imported.
@@ -652,10 +658,10 @@ async def sync_jira_to_cosmos(state: State, *, force_full: bool = False) -> dict
         vector_field = COSMOS_VECTOR_FIELD
         checkpoint = await _read_checkpoint(container, project_key)
 
-        full_sync = force_full or checkpoint is None
+        full_sync = force_full or checkpoint is None or await cache_is_empty(state)
         if full_sync:
             jql = f'project = "{project_key}" ORDER BY updated ASC, key ASC'
-            mode = "full" if force_full else "initial_full"
+            mode = "full" if force_full or checkpoint is not None else "initial_full"
             print(f"Starting {mode} Jira sync for project {project_key}.")
         else:
             watermark_raw = checkpoint.get("sync_watermark_utc")
@@ -756,6 +762,8 @@ async def sync_jira_to_cosmos(state: State, *, force_full: bool = False) -> dict
             container,
             project_key,
         )
+        # Done before the checkpoint, so if this fails the next run retries these issues.
+        cache_rows = await upsert_issues(transformed, sync_started, state)
 
         # Use the run's start time as the watermark. Any issues changed during the
         # current scan will be included on the next run (also protected by overlap).
@@ -785,6 +793,7 @@ async def sync_jira_to_cosmos(state: State, *, force_full: bool = False) -> dict
             "vectors_reused": vectors_reused,
             "embeddings_generated": len(embedding_queue),
             "documents_upserted": len(transformed),
+            "cache_rows_upserted": cache_rows,
             "vector_field_used": f"/{vector_field}",
             "embedding_model": config["embedding_model"],
             "embedding_dimensions": EMBEDDING_DIMENSIONS,
