@@ -19,7 +19,9 @@ export default function LoginPage({
   return (
     <div className="login-page">
       <header className="public-header">
-        <Brand />
+        <button type="button" className="brand-button" onClick={onBack} aria-label="Ticket2Go home">
+          <Brand />
+        </button>
         <ThemeToggle dark={dark} toggle={toggle} />
       </header>
       <main className="login-main">

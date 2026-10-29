@@ -5,8 +5,12 @@ import Icon from "../ui/Icon";
 import ThemeToggle from "../ui/ThemeToggle";
 const items = [
   { id: "dashboard" as const, label: "Overview", icon: "grid" as const },
-  { id: "meeting" as const, label: "Meeting", icon: "mic" as const },
-  { id: "history" as const, label: "History", icon: "history" as const },
+  { id: "meeting" as const, label: "Record a meeting", icon: "mic" as const },
+  {
+    id: "history" as const,
+    label: "Meeting History",
+    icon: "history" as const,
+  },
   { id: "tasks" as const, label: "Tasks", icon: "tasks" as const },
 ];
 export default function AppShell({
@@ -77,7 +81,6 @@ export default function AppShell({
             <strong>{items.find((i) => i.id === screen)?.label}</strong>
           </div>
           <div className="row">
-            <span className="local-label">Saved on this browser</span>
             <ThemeToggle dark={dark} toggle={toggle} />
             <button
               className="icon-button mobile-logout"

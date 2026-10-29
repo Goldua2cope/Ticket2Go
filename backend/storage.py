@@ -22,7 +22,9 @@ async def load_meeting_transcript(meeting_id: str, config: State) -> dict:
             download = await blob.download_blob()
             transcript = json.loads(await download.readall())
     except (TimeoutError, AzureError, ValueError):
-        raise TranscriptStorageError("Could not read the saved meeting transcript.") from None
+        raise TranscriptStorageError(
+            "Could not read the saved meeting transcript."
+        ) from None
 
     segments = transcript.get("segments") if isinstance(transcript, dict) else None
     if not isinstance(segments, list) or not any(
@@ -35,7 +37,9 @@ async def load_meeting_transcript(meeting_id: str, config: State) -> dict:
     return transcript
 
 
-async def save_meeting_transcript(meeting_id: str, transcript: dict, config: State) -> str:
+async def save_meeting_transcript(
+    meeting_id: str, transcript: dict, config: State
+) -> str:
     """Upload UTF-8 text as <meeting_id>.txt and return the blob name."""
     meeting_id = str(UUID(meeting_id))
 
@@ -47,9 +51,7 @@ async def save_meeting_transcript(meeting_id: str, transcript: dict, config: Sta
         and segment["text"].strip()
         for segment in segments
     ):
-        raise TranscriptStorageError(
-            "No transcript text was produced, so no file was saved."
-        )
+        raise TranscriptStorageError("No transcript text was produced.")
 
     # Serialize the transcript dictionary to UTF-8 JSON.
     try:
@@ -90,5 +92,5 @@ async def save_meeting_transcript(meeting_id: str, transcript: dict, config: Sta
             f"Could not confirm that meeting {meeting_id} was saved. Check storage access "
             "and connectivity. Your transcript is still on this page."
         ) from None
-    
+
     return blob_name

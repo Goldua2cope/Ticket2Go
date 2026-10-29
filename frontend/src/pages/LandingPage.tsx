@@ -13,7 +13,9 @@ export default function LandingPage({
   return (
     <div className="landing">
       <header className="public-header">
-        <Brand />
+        <button type="button" className="brand-button" onClick={() => window.scrollTo({ top: 0 })} aria-label="Ticket2Go home">
+          <Brand />
+        </button>
         <div className="row">
           <ThemeToggle dark={dark} toggle={toggle} />
           <button className="button primary small" onClick={onStart}>
@@ -130,7 +132,7 @@ export default function LandingPage({
                 n: "02",
                 icon: "history" as const,
                 title: "Keep the clarity",
-                text: "Revisit your transcript, key decisions, and AI summary in one organized meeting history.",
+                text: "Revisit key decisions and AI summary in one organized meeting history.",
               },
               {
                 n: "03",
@@ -163,7 +165,9 @@ export default function LandingPage({
         </section>
       </main>
       <footer>
-        <Brand />
+        <button type="button" className="brand-button" onClick={() => window.scrollTo({ top: 0 })} aria-label="Ticket2Go home">
+          <Brand />
+        </button>
         <span>A little clarity. A lot of possibility.</span>
         <span>Ticket2Go © {new Date().getFullYear()}</span>
       </footer>

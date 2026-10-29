@@ -8,6 +8,7 @@ import DashboardPage from "../../pages/DashboardPage";
 import MeetingPage from "../../pages/MeetingPage";
 import HistoryPage from "../../pages/HistoryPage";
 import TasksPage from "../../pages/TasksPage";
+import { readWorkspaceSession, saveWorkspaceSession } from "../../lib/workspaceSession";
 import { loadMeetings, syncSavedJiraData } from "../../lib/meetingApi";
 import {
   mergeSuggestions,
@@ -26,8 +27,11 @@ export default function Workspace({
   toggle: () => void;
   onLogout: () => void;
 }) {
-  const [screen, setScreen] = useState<Screen>("dashboard");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [screen, setScreen] = useState<Screen>(() => readWorkspaceSession().screen);
+  const [selectedId, setSelectedId] = useState<string | null>(() => readWorkspaceSession().selectedId);
+  useEffect(() => {
+    saveWorkspaceSession(screen, selectedId);
+  }, [screen, selectedId]);
   const [suggestionRuns, setSuggestionRuns] = useState<
     Record<string, { loading: boolean; message: string; retry?: boolean }>
   >({});
@@ -179,6 +183,14 @@ export default function Workspace({
     setSelectedId(id);
     setScreen("history");
   }
+  function openLiveMeeting() {
+    const meetingId = recorder.savedMeetingId;
+    if (!busy && meetingId && meetings.some((meeting) => meeting.id === meetingId)) {
+      selectMeeting(meetingId);
+    } else {
+      navigate("meeting");
+    }
+  }
   async function updateTask(
     _meetingId: string,
     task: Task,
@@ -228,7 +240,7 @@ export default function Workspace({
       liveMeeting={
         <LiveMeetingPanel
           recorder={recorder}
-          onOpenMeeting={() => navigate("meeting")}
+          onOpenMeeting={openLiveMeeting}
         />
       }>
       <RecordingBanner recorder={recorder} onOpen={() => navigate("meeting")} />

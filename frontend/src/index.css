@@ -237,6 +237,14 @@ code {
 .text-button:hover {
   text-decoration: underline;
 }
+.brand-button {
+  display: inline-flex;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
 .brand {
   display: inline-flex;
   align-items: center;
@@ -341,6 +349,12 @@ code {
   max-width: 1440px;
   margin: auto;
 }
+
+.login-page {
+  max-width: 1440px;
+  margin: auto;
+}
+
 .public-header {
   height: 94px;
   padding: 0 6.5%;
