@@ -751,7 +751,7 @@ footer > span:not(.brand) {
   inset: auto auto 95px 251px;
   margin: 0;
   padding: 0;
-  width: min(420px, calc(100vw - 267px));
+  width: min(550px, calc(100vw - 267px));
   max-height: calc(100dvh - 120px);
   overflow: auto;
   color: var(--text);
@@ -782,7 +782,7 @@ footer > span:not(.brand) {
 }
 .transcript-text.live-transcript-text {
   min-height: 0;
-  height: 300px;
+  height: 600px;
   padding: 18px;
   overscroll-behavior: contain;
 }
@@ -1944,11 +1944,23 @@ footer > span:not(.brand) {
   }
 }
 
-.meeting-list-entry { position: relative; border-bottom: 1px solid var(--line); }
-.meeting-list-entry:last-child { border-bottom: 0; }
-.meeting-list-entry .meeting-row { border-bottom: 0; }
-.meeting-visibility-note { margin-bottom: 20px; font-size: .85rem; }
-.meeting-visibility-note p { margin: 0 0 6px; }
+.meeting-list-entry {
+  position: relative;
+  border-bottom: 1px solid var(--line);
+}
+.meeting-list-entry:last-child {
+  border-bottom: 0;
+}
+.meeting-list-entry .meeting-row {
+  border-bottom: 0;
+}
+.meeting-visibility-note {
+  margin-bottom: 20px;
+  font-size: 0.85rem;
+}
+.meeting-visibility-note p {
+  margin: 0 0 6px;
+}
 
 .meeting-row-open {
   display: flex;
@@ -1962,9 +1974,19 @@ footer > span:not(.brand) {
   color: inherit;
   text-align: left;
 }
-.meeting-row-open > svg { flex-shrink: 0; color: var(--muted); }
-.meeting-row-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.meeting-delete-button { flex-shrink: 0; }
+.meeting-row-open > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.meeting-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.meeting-delete-button {
+  flex-shrink: 0;
+}
 .delete-meeting-dialog {
   position: fixed;
   inset: 0;
@@ -1979,13 +2001,37 @@ footer > span:not(.brand) {
   color: var(--text);
   box-shadow: 0 20px 60px #0004;
 }
-.delete-meeting-dialog::backdrop { background: #0008; }
-.delete-meeting-dialog h2 { font-size: 1.2rem; margin: 0 0 14px; }
-.delete-meeting-dialog p { font-size: .9rem; line-height: 1.6; margin: 0 0 12px; overflow-wrap: anywhere; }
-.delete-meeting-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 22px; }
+.delete-meeting-dialog::backdrop {
+  background: #0008;
+}
+.delete-meeting-dialog h2 {
+  font-size: 1.2rem;
+  margin: 0 0 14px;
+}
+.delete-meeting-dialog p {
+  font-size: 0.9rem;
+  line-height: 1.6;
+  margin: 0 0 12px;
+  overflow-wrap: anywhere;
+}
+.delete-meeting-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 22px;
+}
 @media (max-width: 760px) {
-  .meeting-row { flex-wrap: wrap; }
-  .meeting-row-open { flex-basis: 100%; }
-  .meeting-row-actions { margin-left: auto; }
-  .meeting-row .meeting-row-actions .badge { display: inline-flex; }
+  .meeting-row {
+    flex-wrap: wrap;
+  }
+  .meeting-row-open {
+    flex-basis: 100%;
+  }
+  .meeting-row-actions {
+    margin-left: auto;
+  }
+  .meeting-row .meeting-row-actions .badge {
+    display: inline-flex;
+  }
 }
