@@ -13,6 +13,7 @@ import {
   readWorkspaceSession,
   saveWorkspaceSession,
 } from "../../lib/workspaceSession";
+import { readHiddenMeetings, saveHiddenMeetings } from "../../lib/hiddenMeetings";
 import { loadMeetings, syncSavedJiraData } from "../../lib/meetingApi";
 import {
   mergeSuggestions,
@@ -45,6 +46,20 @@ export default function Workspace({
   >({});
   const activeRuns = useRef(new Set<string>());
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [hiddenMeetingIds, setHiddenMeetingIds] = useState(readHiddenMeetings);
+  const [visibilityError, setVisibilityError] = useState("");
+  const visibleMeetings = meetings.filter((meeting) => !hiddenMeetingIds.includes(meeting.id));
+  function changeMeetingVisibility(id: string, hidden: boolean) {
+    const next = hidden ? [...new Set([...hiddenMeetingIds, id])] : hiddenMeetingIds.filter((item) => item !== id);
+    try {
+      saveHiddenMeetings(next);
+      setHiddenMeetingIds(next);
+      setVisibilityError("");
+      if (hidden && selectedId === id) setSelectedId(null);
+    } catch {
+      setVisibilityError("Could not save this preference. Allow browser storage and try again. The meeting has not been changed.");
+    }
+  }
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
   const [historyReload, setHistoryReload] = useState(0);
@@ -281,7 +296,8 @@ export default function Workspace({
           {reviewError}
         </p>
       )}
-      {Object.entries(suggestionRuns).map(([meetingId, run]) => (
+      {visibilityError && <p className="error" role="alert">{visibilityError}</p>}
+      {Object.entries(suggestionRuns).filter(([id]) => !hiddenMeetingIds.includes(id)).map(([meetingId, run]) => (
         <div
           key={meetingId}
           className={run.retry ? "error" : "subtle-note"}
@@ -319,7 +335,7 @@ export default function Workspace({
       )}
       {screen === "dashboard" && historyVisible && (
         <DashboardPage
-          meetings={meetings}
+          meetings={visibleMeetings}
           navigate={navigate}
           onSelect={selectMeeting}
           busy={busy}
@@ -331,6 +347,9 @@ export default function Workspace({
       {screen === "history" && historyVisible && (
         <HistoryPage
           meetings={meetings}
+          hiddenMeetingIds={hiddenMeetingIds}
+          onHide={(id) => changeMeetingVisibility(id, true)}
+          onRestore={(id) => changeMeetingVisibility(id, false)}
           selectedId={selectedId}
           onSelect={selectMeeting}
           onTaskChange={updateTask}

@@ -1,4 +1,5 @@
 type Name =
+  | "trash"
   | "bot"
   | "arrow"
   | "mic"
@@ -12,6 +13,7 @@ type Name =
   | "edit"
   | "logout";
 const paths: Record<Name, string> = {
+  trash: "M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7",
   bot: "M12 3v3m-2-3h4M5 7h14v13H5ZM2 11v5m20-5v5M9 11v2m6-2v2m-6 4h6",
   arrow: "M5 12h14m-6-6 6 6-6 6",
   mic: "M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3ZM5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8",
