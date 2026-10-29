@@ -23,6 +23,7 @@ from .schemas import (
     EvidenceRef,
     EvidenceSource,
     HistoricalContext,
+    IssueType,
     ItemType,
     MeetingItem,
     Priority,
@@ -32,6 +33,7 @@ from .schemas import (
     ProposalRevision,
     ProposalType,
     RevisionSet,
+    SUBTASK_PARENT_TYPES,
     SourceDocument,
     TicketProposal,
 )
@@ -132,6 +134,15 @@ Context:
 - Deadline: Friday this week
 ```
 
+**Work type** (`issue_type`)
+
+- **Task:** the default. A piece of work that stands on its own.
+- **Subtask:** one concrete step of larger work that is already tracked. Use it only when the parent is an OPEN Story, Task or Bug in `jira_candidates`, or a Story, Task or Bug suggestion in `prior_ticket_proposals` that has not been rejected. Set `parent_issue_key` to the issue key or to the suggestion's id. Without such a parent, use Task.
+- **Bug:** something that should work is broken or unreliable. Typical for problem items.
+- **Story:** rarely, only when the meeting defines a new capability for users that clearly needs several separate pieces of work. Explain in the rationale why a Story and not a Task.
+- **Epic:** never. People create epics.
+- Set `parent_issue_key` to `null` for every type except Subtask.
+
 ## Update
 
 The description is appended to an existing Jira issue, so write a short changelog entry, not a new ticket.
@@ -150,6 +161,7 @@ New acceptance criteria:
 - One fact per line. When the old value is known, write "changed from <old> to <new>".
 - Include `New acceptance criteria:` only for criteria agreed in the current meeting.
 - Never restate, summarize, or rewrite existing issue content. Repeat an existing owner, deadline, or decision only when it changed or was explicitly reconfirmed.
+- Set `issue_type` and `parent_issue_key` to `null`; the issue already exists.
 
 **New information:** Required. One or two sentences for the reviewer stating what the current meeting adds that the issue lacks.
 
@@ -159,7 +171,7 @@ Only `new_information` is recorded. It is appended to each pending suggestion as
 
 - **New information:** One or two short sentences with no line breaks or list items. State each change concretely, preserving names, dates, deadlines, and owners as stated. When the old value is known, write "changed from <old> to <new>". Example: "Deadline changed from Friday to next Wednesday; owner confirmed as Embla."
 - Record only changes the sources establish. Never infer that a value changed.
-- Set `summary` and `description` to `null`.
+- Set `summary`, `description`, `issue_type`, and `parent_issue_key` to `null`.
 - List every affected pending proposal in `revise_proposal_ids`. Never revise approved or rejected suggestions.
 
 ## None
@@ -167,7 +179,7 @@ Only `new_information` is recorded. It is appended to each pending suggestion as
 Do not propose a Jira change when evidence is insufficient, the item is informational, or existing tracking already covers the work.
 
 - Do not turn questions, speculation, tentative ideas, or unresolved proposals into commitments. Preserve uncertainty rather than inventing a decision.
-- Set `summary`, `description`, and `new_information` to `null`.
+- Set `summary`, `description`, `new_information`, `issue_type`, and `parent_issue_key` to `null`.
 - Start the rationale with one of these labels, followed by one sentence:
   - "Already tracked: <ISSUE-KEY> covers this, and the meeting adds nothing new."
   - "Informational: <why no work follows>."
@@ -365,6 +377,7 @@ class ProposalGenerator:
                 return abstain(f"Update to {existing_issue_key} had no new information.")
 
         rationale = output.rationale.strip() or "No rationale provided."
+        issue_type, parent_issue_key = None, None
 
         if output.outcome == ProposalOutcome.CREATE:
             if focus_is_problem and assessment is not None:
@@ -387,6 +400,12 @@ class ProposalGenerator:
                     "(similar summary): check it before approving."
                 )
 
+            issue_type, parent_issue_key, note = _choose_work_type(
+                output, context, make_proposal_id(item.item_id)
+            )
+            if note:
+                rationale = f"{rationale} {note}"
+
         evidence = resolve_quotes(output.evidence, citable)
         if not _has_current_meeting_evidence(evidence):
             # The item itself is verified, so it always grounds the proposal.
@@ -407,7 +426,9 @@ class ProposalGenerator:
             rationale=rationale,
             evidence=evidence,
             related_meeting_ids=_related_meeting_ids(evidence, assessment),
-            priority=priority
+            priority=priority,
+            issue_type=issue_type,
+            parent_issue_key=parent_issue_key,
         )
 
 
@@ -490,6 +511,47 @@ def _has_current_meeting_evidence(evidence: list[EvidenceRef]) -> bool:
         if ref.source in (EvidenceSource.TRANSCRIPT, EvidenceSource.SUMMARY):
             return True
     return False
+
+
+def _choose_work_type(
+    output: ProposalOutput,
+    context: HistoricalContext,
+    own_proposal_id: UUID,
+) -> tuple[IssueType, str | None, str | None]:
+    """The model's work type, made valid: (type, parent, note for the reviewer).
+
+    The parent is a Jira key, or the proposal_id of a parent suggestion that is
+    not in Jira yet.
+    """
+    issue_type = output.issue_type or IssueType.TASK
+    if issue_type == IssueType.EPIC:
+        return IssueType.TASK, None, "Suggested as an epic; changed to Task because people create epics."
+    if issue_type != IssueType.SUBTASK:
+        return issue_type, None, None
+
+    parent = (output.parent_issue_key or "").strip()
+    candidate = context.candidate(parent)
+    if (
+        candidate is not None
+        and candidate.issue_type in SUBTASK_PARENT_TYPES
+        and not candidate.is_resolved
+    ):
+        return IssueType.SUBTASK, candidate.issue_key, None
+
+    for prior in context.prior_proposals:
+        if (
+            str(prior.proposal_id) == parent
+            and prior.proposal_id != own_proposal_id
+            and prior.proposal_type == ProposalType.CREATE
+            and (prior.issue_type or IssueType.TASK) in SUBTASK_PARENT_TYPES
+            and prior.review_status != "rejected"
+        ):
+            # Once the parent suggestion is in Jira, point at its real key.
+            return IssueType.SUBTASK, prior.jira_issue_key or str(prior.proposal_id), None
+
+    return IssueType.TASK, None, (
+        "Suggested as a subtask, but no open parent story, task or bug was found; changed to Task."
+    )
 
 
 def _related_meeting_ids(

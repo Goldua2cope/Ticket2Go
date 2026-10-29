@@ -599,6 +599,7 @@ def render_jira_candidates(candidates: list[JiraCandidate]) -> str:
         header = [
             f'key="{candidate.issue_key}"',
             f'id="{candidate.document_id}"',
+            f'type="{candidate.issue_type or "unknown"}"',
             f'status="{candidate.status or "unknown"}"',
             f'state="{state}"',
             f'assignee="{candidate.assignee or "unassigned"}"',
@@ -648,6 +649,8 @@ def render_context(context: HistoricalContext) -> str:
     proposal_lines = []
     for proposal in context.prior_proposals:
         proposal_type = proposal.proposal_type.value if proposal.proposal_type else "unknown"
+        if proposal.issue_type:
+            proposal_type = f"{proposal_type} {proposal.issue_type}"  # e.g. "create Story"
         jira_key = proposal.jira_issue_key or proposal.existing_issue_key or "no issue"
         edited = ", edited by user" if proposal.edited_by_user else ""
         proposal_lines.append(

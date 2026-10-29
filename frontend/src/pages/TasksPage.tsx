@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Meeting, Task, TaskStatus, TaskAction } from "../lib/types";
 import TaskCard from "../components/tasks/TaskCard";
 import EmptyState from "../components/ui/EmptyState";
+import { uniqueTasks } from "../lib/taskApi";
 export default function TasksPage({
   meetings,
   onTaskChange,
@@ -10,9 +11,8 @@ export default function TasksPage({
   onTaskChange: (meetingId: string, task: Task, action: TaskAction) => Promise<void>;
 }) {
   const [filter, setFilter] = useState<TaskStatus | "all">("all");
-  const tasks = meetings.flatMap((meeting) =>
-    meeting.tasks.map((task) => ({ task, meeting })),
-  );
+  // Each suggestion once, even when a later meeting revised it.
+  const tasks = uniqueTasks(meetings);
   const filtered = tasks.filter(
     ({ task }) => filter === "all" || task.status === filter,
   );
@@ -56,6 +56,7 @@ export default function TasksPage({
               <p className="task-source">{meeting.title}</p>
               <TaskCard
                 task={task}
+                meetingId={meeting.id}
                 onChange={(updated, action) => onTaskChange(meeting.id, updated, action)}
               />
             </div>

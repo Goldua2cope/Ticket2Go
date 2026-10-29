@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS meeting_items (
     item_id UUID PRIMARY KEY,
     meeting_id UUID NOT NULL REFERENCES meetings(meeting_id),
     item_type TEXT NOT NULL
-        CHECK (item_type IN ('action', 'decision', 'question')),
+        CHECK (item_type IN ('action', 'decision', 'question', 'problem')),
     content TEXT NOT NULL,
     evidence_refs TEXT,
     severity TEXT
@@ -28,17 +28,30 @@ CREATE TABLE IF NOT EXISTS meeting_items (
 CREATE TABLE IF NOT EXISTS jira_issue_cache (
     issue_key TEXT PRIMARY KEY,
     summary TEXT NOT NULL,
+    description TEXT,
+    issue_type TEXT NOT NULL,
     project_key TEXT NOT NULL,
+    parent_issue_key TEXT,
     status TEXT NOT NULL,
+    labels TEXT[],
+    assignee TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     jira_url TEXT NOT NULL,
-    labels TEXT[]
+    components TEXT[]
 );
+
+ALTER TABLE jira_issue_cache ADD COLUMN IF NOT EXISTS issue_type TEXT NOT NULL DEFAULT 'Unknown';
+ALTER TABLE jira_issue_cache ALTER COLUMN issue_type DROP DEFAULT;
+ALTER TABLE jira_issue_cache ADD COLUMN IF NOT EXISTS parent_issue_key TEXT;
+ALTER TABLE jira_issue_cache ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE jira_issue_cache ADD COLUMN IF NOT EXISTS assignee TEXT;
+ALTER TABLE jira_issue_cache ADD COLUMN IF NOT EXISTS components TEXT[];
+
 
 CREATE TABLE IF NOT EXISTS ticket_proposals (
     proposal_id UUID PRIMARY KEY,
-    item_id UUID NOT NULL REFERENCES meeting_items(item_id),
+    item_id UUID NOT NULL REFERENCES meeting_items(item_id) ON DELETE CASCADE,
     summary TEXT NOT NULL,
     description TEXT,
     assignee_account_id TEXT,
@@ -65,10 +78,28 @@ CREATE TABLE IF NOT EXISTS ticket_proposals (
         CHECK (priority IN (
             'Lowest', 'Low', 'Medium', 'High', 'Highest'
         )),
+    -- A Subtask's parent: a Jira key, or the parent suggestion's proposal_id
+    -- until that suggestion is created in Jira (then replaced by its key).
     parent_issue_key TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    labels TEXT[]
+    labels TEXT[],
+    -- Sprint a new Story, Task or Bug goes into on approval. NULL = backlog.
+    target_sprint_id INTEGER CHECK (target_sprint_id > 0)
 );
+ALTER TABLE ticket_proposals ADD COLUMN IF NOT EXISTS target_sprint_id INTEGER
+    CHECK (target_sprint_id > 0);
+
+-- One row per meeting item that revised a pending suggestion from an earlier
+-- meeting. The suggestion is listed under its own meeting and each revising one.
+CREATE TABLE IF NOT EXISTS proposal_revisions (
+    proposal_id UUID NOT NULL REFERENCES ticket_proposals(proposal_id) ON DELETE CASCADE,
+    item_id UUID NOT NULL REFERENCES meeting_items(item_id) ON DELETE CASCADE,
+    meeting_id UUID NOT NULL REFERENCES meetings(meeting_id),
+    change TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (proposal_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS proposal_revisions_meeting_id_idx ON proposal_revisions (meeting_id);
 
 CREATE TABLE IF NOT EXISTS integration_sync_state (
     integration_id BIGINT PRIMARY KEY,
@@ -103,12 +134,8 @@ CREATE TABLE IF NOT EXISTS problem_assessments (
 COMMIT;
 
 SELECT * FROM meetings;
-
 SELECT * FROM meeting_items;
 SELECT * FROM jira_issue_cache;
 SELECT * FROM ticket_proposals;
-
 SELECT * FROM problem_assessments;
-
-UPDATE ticket_proposals SET review_status='pending'
-WHERE proposal_id='ced88b4a-3e84-55af-b26f-f197fbecda7d';
+SELECT * FROM proposal_revisions;

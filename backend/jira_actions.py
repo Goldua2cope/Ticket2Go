@@ -1008,14 +1008,71 @@ async def search_meeting_history(
     )
 
 
+def _board_id(state: State) -> int:
+    board_id = getattr(state, "jira_board_id", None)
+    if type(board_id) is not int or board_id < 1:
+        raise ValueError("A positive jira_board_id is required.")
+    return board_id
+
+
+async def get_board_sprints(state: State) -> list[dict[str, Any]]:
+    """Active and future sprints on the configured board, in board order.
+
+    Closed sprints are left out: Jira does not accept issues into them.
+    """
+    board_id = _board_id(state)
+    start = 0
+    sprints: list[dict[str, Any]] = []
+    while True:
+        page = await _jira_request(
+            state, "GET", f"board/{board_id}/sprint", api="agile/1.0",
+            params={"state": "active,future", "startAt": start, "maxResults": 50},
+        )
+        values = page.get("values")
+        if not isinstance(values, list):
+            raise JiraActionError("Jira returned an invalid sprint list.")
+        for sprint in values:
+            if (isinstance(sprint, dict) and type(sprint.get("id")) is int and sprint["id"] > 0
+                    and sprint.get("state") in ("active", "future")):
+                sprints.append({
+                    "id": sprint["id"],
+                    "name": sprint.get("name") or f"Sprint {sprint['id']}",
+                    "state": sprint["state"],
+                    "start_date": sprint.get("startDate"),
+                    "end_date": sprint.get("endDate"),
+                })
+        start += len(values)
+        total = page.get("total")
+        if page.get("isLast") is True or (type(total) is int and start >= total):
+            return sprints
+        if not values or start > 1000:
+            raise JiraActionError("Jira sprint pagination could not be completed.")
+
+
+async def get_issue_sprint(state: State, issue_key: str) -> dict[str, Any] | None:
+    """The open sprint an issue is in, or None when it is in the backlog."""
+    if not issue_key or not issue_key.strip():
+        raise ValueError("issue_key must not be empty.")
+    issue = await _jira_request(
+        state, "GET", f"issue/{quote(issue_key.strip(), safe='')}", api="agile/1.0",
+        params={"fields": "sprint"},
+    )
+    sprint = (issue.get("fields") or {}).get("sprint")
+    if not isinstance(sprint, dict) or type(sprint.get("id")) is not int:
+        return None
+    return {
+        "id": sprint["id"],
+        "name": sprint.get("name") or f"Sprint {sprint['id']}",
+        "state": sprint.get("state"),
+    }
+
+
 async def get_active_sprint(state: State) -> dict[str, Any] | None:
     """Return the single active sprint on the configured board, or None.
 
     Errors and ambiguous parallel sprints must not be mistaken for an empty board.
     """
-    board_id = getattr(state, "jira_board_id", None)
-    if type(board_id) is not int or board_id < 1:
-        raise ValueError("A positive jira_board_id is required.")
+    board_id = _board_id(state)
     start = 0
     found: dict[int, dict[str, Any]] = {}
     while True:
@@ -1032,7 +1089,7 @@ async def get_active_sprint(state: State) -> dict[str, Any] | None:
                 raise JiraActionError("Jira returned an invalid active sprint.")
             found[sprint["id"]] = sprint
         if len(found) > 1:
-            raise JiraActionError("More than one sprint is active on the configured board. Choose a destination in Jira.")
+            raise JiraActionError("More than one sprint is active on the board. Choose a specific sprint or the backlog.")
         start += len(values)
         total = page.get("total")
         if page.get("isLast") is True or (type(total) is int and start >= total):

@@ -11,6 +11,8 @@ from typing import Any
 
 from starlette.datastructures import State
 
+from backend.ticket_suggestion.schemas import RESOLVED_STATUS_NAMES, SUBTASK_PARENT_TYPES
+
 logger = logging.getLogger(__name__)
 
 
@@ -41,6 +43,11 @@ async def upsert_issues(
                 synced_at,
                 issue["jira_url"],
                 issue.get("labels") or [],
+                issue.get("issue_type") or "Unknown",
+                issue.get("parent_issue_key"),
+                issue.get("description") or None,
+                issue.get("assignee_display_name"),
+                issue.get("components") or [],
             )
         )
 
@@ -52,9 +59,10 @@ async def upsert_issues(
                         """
                         INSERT INTO jira_issue_cache (
                             issue_key, summary, project_key, status,
-                            updated_at, synced_at, jira_url, labels
+                            updated_at, synced_at, jira_url, labels,
+                            issue_type, parent_issue_key, description, assignee, components
                         )
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                         ON CONFLICT (issue_key) DO UPDATE SET
                             summary = EXCLUDED.summary,
                             project_key = EXCLUDED.project_key,
@@ -62,7 +70,12 @@ async def upsert_issues(
                             updated_at = EXCLUDED.updated_at,
                             synced_at = EXCLUDED.synced_at,
                             jira_url = EXCLUDED.jira_url,
-                            labels = EXCLUDED.labels
+                            labels = EXCLUDED.labels,
+                            issue_type = EXCLUDED.issue_type,
+                            parent_issue_key = EXCLUDED.parent_issue_key,
+                            description = EXCLUDED.description,
+                            assignee = EXCLUDED.assignee,
+                            components = EXCLUDED.components
                         """,
                         rows,
                     )
@@ -73,6 +86,29 @@ async def upsert_issues(
         ) from None
 
     return len(rows)
+
+
+async def fetch_subtask_parents(project_key: str, config: State) -> list[dict[str, Any]]:
+    """Cached issues a Subtask can go under: open ones first, then by key."""
+    async with asyncio.timeout(5):
+        rows = await config.postgres.fetch(
+            """
+            SELECT issue_key, summary, issue_type, status
+            FROM jira_issue_cache
+            WHERE project_key = $1 AND issue_type = ANY($2::text[])
+            ORDER BY length(issue_key), issue_key
+            """,
+            project_key,
+            [str(issue_type) for issue_type in sorted(SUBTASK_PARENT_TYPES)],
+        )
+
+    parents = []
+    for row in rows:
+        parent = dict(row)
+        parent["is_done"] = (parent["status"] or "").strip().casefold() in RESOLVED_STATUS_NAMES
+        parents.append(parent)
+    parents.sort(key=lambda parent: parent["is_done"])  # open first; key order is kept
+    return parents
 
 
 async def cache_is_empty(config: State) -> bool:

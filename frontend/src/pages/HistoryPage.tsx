@@ -73,6 +73,7 @@ export default function HistoryPage({
         <SavedMeetingSummary key={selected.id} meeting={selected} />
         <TaskSuggestions
           tasks={selected.tasks}
+          meetingId={selected.id}
           loading={suggestionsLoading}
           onChange={(task, action) => onTaskChange(selected.id, task, action)}
         />

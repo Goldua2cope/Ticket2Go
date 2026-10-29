@@ -693,6 +693,7 @@ async def sync_jira_to_cosmos(state: State, *, force_full: bool = False) -> dict
             )
 
         raw_issues, page_count = await _fetch_all_issues(client, config, jql)
+
         issues = _deduplicate_issues(raw_issues)
         print(f"Fetched {len(raw_issues)} issue records; {len(issues)} unique issues to process.")
 
