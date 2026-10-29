@@ -5,10 +5,12 @@ export default function TaskSuggestions({
   tasks,
   onChange,
   loading = false,
+  meetingId,
 }: {
   tasks: Task[];
   onChange: (task: Task, action: TaskAction) => Promise<void>;
   loading?: boolean;
+  meetingId?: string;
 }) {
   return (
     <section className="suggestions">
@@ -27,7 +29,12 @@ export default function TaskSuggestions({
       {tasks.length ? (
         <div className="task-grid">
           {tasks.map((task) => (
-            <TaskCard key={task.id} task={task} onChange={onChange} />
+            <TaskCard
+              key={task.id}
+              task={task}
+              onChange={onChange}
+              meetingId={meetingId}
+            />
           ))}
         </div>
       ) : !loading ? (

@@ -9,7 +9,6 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 import uvicorn
-from fastapi.staticfiles import StaticFiles
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -42,7 +41,7 @@ from backend.meeting_assistant import (
 from backend.meeting_ingestion import ingest_meeting_transcript, ingest_meeting_summary
 from backend.jira_sync import sync_jira_to_cosmos
 from backend.ticket_suggestion.routes import router as suggestion_router
-from backend.ticket_suggestion.review_routes import router as review_router
+from backend.approval_process.review_routes import router as review_router
 from backend.meeting_routes import router as meeting_router
 
 logger = logging.getLogger("uvicorn.error")
@@ -96,7 +95,6 @@ async def _run_jira_sync() -> None:
             "Meeting transcription will continue."
         )
 
-
 def _schedule_jira_sync() -> None:
     """Start Jira sync unless a sync is already running."""
     current_task = getattr(app.state, "jira_sync_task", None)
@@ -117,6 +115,7 @@ async def health():
     """
     Checks weather Azure resources are reachable.
     """
+
     check_list = {
         "postgres": check_postgres,
         "cosmos": check_cosmos,

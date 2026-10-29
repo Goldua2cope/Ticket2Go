@@ -56,9 +56,10 @@ async def _upsert_proposal(connection, proposal: TicketProposal):
         """
         INSERT INTO ticket_proposals (
             proposal_id, item_id, proposal_type, summary, description,
-            jira_issue_key, rationale, evidence, related_meeting_ids, priority
+            jira_issue_key, rationale, evidence, related_meeting_ids, priority,
+            issue_type, parent_issue_key
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::uuid[], $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::uuid[], $10, $11, $12)
         ON CONFLICT (proposal_id) DO UPDATE SET
             proposal_type = EXCLUDED.proposal_type,
             summary = EXCLUDED.summary,
@@ -67,11 +68,14 @@ async def _upsert_proposal(connection, proposal: TicketProposal):
             rationale = EXCLUDED.rationale,
             evidence = EXCLUDED.evidence,
             related_meeting_ids = EXCLUDED.related_meeting_ids,
-            priority = EXCLUDED.priority
+            priority = EXCLUDED.priority,
+            issue_type = EXCLUDED.issue_type,
+            parent_issue_key = EXCLUDED.parent_issue_key
         WHERE ticket_proposals.review_status = 'pending'
         RETURNING proposal_id, item_id, proposal_type, summary, description,
                   assignee_account_id, review_status, execution_status,
-                  jira_issue_key, rationale, evidence, related_meeting_ids, priority
+                  jira_issue_key, rationale, evidence, related_meeting_ids, priority,
+                  issue_type, parent_issue_key
         """,
         proposal.proposal_id,
         proposal.item_id,
@@ -85,6 +89,8 @@ async def _upsert_proposal(connection, proposal: TicketProposal):
         evidence,
         proposal.related_meeting_ids,
         proposal.priority,
+        proposal.issue_type,
+        proposal.parent_issue_key,
     )
 
 
@@ -132,7 +138,7 @@ async def _append_revision(connection, revision: ProposalRevision, meeting_date:
     note = f"\n\nUpdate from a later meeting{when}: {revision.change} {marker}"
     evidence = json.dumps([ref.model_dump(mode="json") for ref in revision.evidence])
 
-    return await connection.fetchrow(
+    row = await connection.fetchrow(
         """
         UPDATE ticket_proposals SET
             description = COALESCE(description, '') || $2,
@@ -143,7 +149,13 @@ async def _append_revision(connection, revision: ProposalRevision, meeting_date:
             END
         WHERE proposal_id = $1
           AND review_status = 'pending'
+          -- Each item revises a suggestion once. The marker check also covers
+          -- revisions made before proposal_revisions existed.
           AND position($5 IN COALESCE(description, '')) = 0
+          AND NOT EXISTS (
+              SELECT 1 FROM proposal_revisions AS r
+              WHERE r.proposal_id = $1 AND r.item_id = $6
+          )
           -- Only a later meeting may revise. If either date is missing, skip.
           AND EXISTS (
               SELECT 1
@@ -155,14 +167,30 @@ async def _append_revision(connection, revision: ProposalRevision, meeting_date:
           )
         RETURNING proposal_id, item_id, proposal_type, summary, description,
                   assignee_account_id, review_status, execution_status,
-                  jira_issue_key, rationale, evidence, related_meeting_ids, priority
+                  jira_issue_key, rationale, evidence, related_meeting_ids, priority,
+                  issue_type, parent_issue_key
         """,
         revision.proposal_id,
         note,
         evidence,
         revision.meeting_id,
         marker,
+        revision.item_id,
     )
+    if row is not None:
+        # Lists the suggestion under the revising meeting too (proposal_reviews).
+        await connection.execute(
+            """
+            INSERT INTO proposal_revisions (proposal_id, item_id, meeting_id, change)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (proposal_id, item_id) DO NOTHING
+            """,
+            revision.proposal_id,
+            revision.item_id,
+            revision.meeting_id,
+            revision.change,
+        )
+    return row
 
 
 def _row_to_dict(row) -> dict[str, Any]:
@@ -198,7 +226,7 @@ async def fetch_related_proposals(
         rows = await config.postgres.fetch(
             """
             SELECT p.proposal_id, p.item_id, p.proposal_type, p.summary, p.description,
-                   p.review_status, p.execution_status, p.jira_issue_key, p.priority,
+                   p.review_status, p.execution_status, p.jira_issue_key, p.priority, p.issue_type,
                    (p.review_status = 'edited') AS edited_by_user
             FROM ticket_proposals AS p
             WHERE p.item_id = ANY($1::uuid[])

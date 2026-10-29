@@ -58,6 +58,35 @@ class ProposalType(StrEnum):
     UPDATE = "update"
 
 
+class IssueType(StrEnum):
+    """Jira work types, named as in the SCRUM project."""
+
+    EPIC = "Epic"
+    STORY = "Story"
+    TASK = "Task"
+    BUG = "Bug"
+    SUBTASK = "Subtask"
+
+
+# The work types Jira allows as a Subtask's parent.
+SUBTASK_PARENT_TYPES = frozenset({IssueType.STORY, IssueType.TASK, IssueType.BUG})
+# The work types placed in a sprint or the backlog. A Subtask follows its
+# parent's sprint, and epics are not sprint work.
+SPRINT_ISSUE_TYPES = frozenset({IssueType.STORY, IssueType.TASK, IssueType.BUG, IssueType.EPIC})
+
+
+def parent_suggestion_id(parent_issue_key: str | None) -> UUID | None:
+    """ticket_proposals.parent_issue_key holds a Jira key, or the proposal_id of a
+    parent suggestion until that suggestion is created in Jira. Returns the
+    proposal_id in the second case, None otherwise."""
+    if not parent_issue_key:
+        return None
+    try:
+        return UUID(parent_issue_key)
+    except ValueError:
+        return None  # a Jira key such as "SCRUM-5"
+
+
 class ProposalOutcome(StrEnum):
     CREATE = "create"
     UPDATE = "update"
@@ -237,6 +266,16 @@ class ProposalOutput(BaseModel):
     priority: Priority | None = Field(
         description="create: defines its importance in relation to other issues"
         )
+    issue_type: IssueType | None = Field(
+        description="create: the work type. Never Epic. Null for update, revise and none.",
+    )
+    parent_issue_key: str | None = Field(
+        description=(
+            "create with Subtask: the key of an OPEN Story, Task or Bug in jira_candidates, "
+            "or the id of a Story, Task or Bug suggestion in prior_ticket_proposals. "
+            "Null otherwise."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +339,7 @@ class PriorProposal(BaseModel):
     existing_issue_key: str | None = None
     jira_issue_key: str | None = None
     priority: Priority | None = None
+    issue_type: str | None = None
     edited_by_user: bool = False
 
 
@@ -427,6 +467,9 @@ class TicketProposal(BaseModel):
     evidence: list[EvidenceRef] = Field(min_length=1)
     related_meeting_ids: list[UUID] = Field(default_factory=list)
     priority: Priority | None = None
+    issue_type: IssueType | None = None
+    # A Jira key, or a parent suggestion's proposal_id (see parent_suggestion_id).
+    parent_issue_key: str | None = None
 
 
 class Abstention(BaseModel):

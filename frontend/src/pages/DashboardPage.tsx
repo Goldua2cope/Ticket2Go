@@ -2,6 +2,7 @@ import type { Meeting, Screen } from "../lib/types";
 import Icon from "../components/ui/Icon";
 import EmptyState from "../components/ui/EmptyState";
 import MeetingList from "../components/meeting/MeetingList";
+import { uniqueTasks } from "../lib/taskApi";
 export default function DashboardPage({
   meetings,
   navigate,
@@ -13,7 +14,8 @@ export default function DashboardPage({
   onSelect: (id: string) => void;
   busy: boolean;
 }) {
-  const tasks = meetings.flatMap((m) => m.tasks);
+  // Count each suggestion once, even when a later meeting revised it.
+  const tasks = uniqueTasks(meetings).map(({ task }) => task);
   return (
     <>
       <div className="page-heading">
