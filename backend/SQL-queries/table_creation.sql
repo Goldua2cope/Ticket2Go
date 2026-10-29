@@ -101,15 +101,6 @@ CREATE TABLE IF NOT EXISTS proposal_revisions (
 );
 CREATE INDEX IF NOT EXISTS proposal_revisions_meeting_id_idx ON proposal_revisions (meeting_id);
 
-CREATE TABLE IF NOT EXISTS integration_sync_state (
-    integration_id BIGINT PRIMARY KEY,
-    last_successful_sync TIMESTAMPTZ,
-    sync_status TEXT NOT NULL DEFAULT 'idle'
-        CHECK (sync_status IN (
-        'idle', 'running', 'succeeded', 'error'
-        ))
-);
-
 CREATE TABLE IF NOT EXISTS problem_assessments (
     item_id UUID PRIMARY KEY REFERENCES meeting_items(item_id) ON DELETE CASCADE,
     is_problem BOOLEAN NOT NULL,
