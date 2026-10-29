@@ -2,13 +2,17 @@ import { useEffect, useRef, useState } from "react";
 import { useRecorder } from "../../hooks/useRecorder";
 import type { Meeting, Screen, Task, TaskAction } from "../../lib/types";
 import AppShell from "./AppShell";
+import MeetingAssistant from "../assistant/MeetingAssistant";
 import RecordingBanner from "../meeting/RecordingBanner";
 import LiveMeetingPanel from "../meeting/LiveMeetingPanel";
 import DashboardPage from "../../pages/DashboardPage";
 import MeetingPage from "../../pages/MeetingPage";
 import HistoryPage from "../../pages/HistoryPage";
 import TasksPage from "../../pages/TasksPage";
-import { readWorkspaceSession, saveWorkspaceSession } from "../../lib/workspaceSession";
+import {
+  readWorkspaceSession,
+  saveWorkspaceSession,
+} from "../../lib/workspaceSession";
 import { loadMeetings, syncSavedJiraData } from "../../lib/meetingApi";
 import {
   mergeSuggestions,
@@ -27,8 +31,12 @@ export default function Workspace({
   toggle: () => void;
   onLogout: () => void;
 }) {
-  const [screen, setScreen] = useState<Screen>(() => readWorkspaceSession().screen);
-  const [selectedId, setSelectedId] = useState<string | null>(() => readWorkspaceSession().selectedId);
+  const [screen, setScreen] = useState<Screen>(
+    () => readWorkspaceSession().screen,
+  );
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => readWorkspaceSession().selectedId,
+  );
   useEffect(() => {
     saveWorkspaceSession(screen, selectedId);
   }, [screen, selectedId]);
@@ -102,7 +110,9 @@ export default function Workspace({
       await syncSavedJiraData();
       setHistoryReload((version) => version + 1);
     } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : "Could not synchronize Jira.");
+      setHistoryError(
+        error instanceof Error ? error.message : "Could not synchronize Jira.",
+      );
       setHistoryLoading(false);
     } finally {
       refreshingHistory.current = false;
@@ -185,7 +195,11 @@ export default function Workspace({
   }
   function openLiveMeeting() {
     const meetingId = recorder.savedMeetingId;
-    if (!busy && meetingId && meetings.some((meeting) => meeting.id === meetingId)) {
+    if (
+      !busy &&
+      meetingId &&
+      meetings.some((meeting) => meeting.id === meetingId)
+    ) {
       selectMeeting(meetingId);
     } else {
       navigate("meeting");
@@ -238,11 +252,9 @@ export default function Workspace({
       onLogout={onLogout}
       busy={busy}
       liveMeeting={
-        <LiveMeetingPanel
-          recorder={recorder}
-          onOpenMeeting={openLiveMeeting}
-        />
+        <LiveMeetingPanel recorder={recorder} onOpenMeeting={openLiveMeeting} />
       }>
+      <MeetingAssistant onOpenMeeting={selectMeeting} />
       <RecordingBanner recorder={recorder} onOpen={() => navigate("meeting")} />
       <div className="row between">
         <span role="status">
