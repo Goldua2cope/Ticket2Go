@@ -24,7 +24,7 @@ export default function RecordingBanner({
       </div>
       <div className="row">
         <button className="text-button" onClick={onOpen}>
-          Open meeting → hej
+          Open meeting →
         </button>
         {recorder.status === "recording" && (
           <button
