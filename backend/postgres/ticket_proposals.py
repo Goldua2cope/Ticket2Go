@@ -49,17 +49,18 @@ async def save_pending_proposals(proposals: list[TicketProposal], config: State)
 
 
 async def _upsert_proposal(connection, proposal: TicketProposal):
-    """Insert or refresh one pending proposal. Returns the stored row, or None if skipped."""
+    """Insert or refresh one pending proposal and its evidence meetings.
+    Returns the stored row as a dict, or None if skipped."""
     evidence = json.dumps([ref.model_dump(mode="json") for ref in proposal.evidence])
 
-    return await connection.fetchrow(
+    row = await connection.fetchrow(
         """
         INSERT INTO ticket_proposals (
             proposal_id, item_id, proposal_type, summary, description,
-            jira_issue_key, rationale, evidence, related_meeting_ids, priority,
+            jira_issue_key, rationale, evidence, priority,
             issue_type, parent_issue_key
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::uuid[], $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
         ON CONFLICT (proposal_id) DO UPDATE SET
             proposal_type = EXCLUDED.proposal_type,
             summary = EXCLUDED.summary,
@@ -67,14 +68,13 @@ async def _upsert_proposal(connection, proposal: TicketProposal):
             jira_issue_key = EXCLUDED.jira_issue_key,
             rationale = EXCLUDED.rationale,
             evidence = EXCLUDED.evidence,
-            related_meeting_ids = EXCLUDED.related_meeting_ids,
             priority = EXCLUDED.priority,
             issue_type = EXCLUDED.issue_type,
             parent_issue_key = EXCLUDED.parent_issue_key
         WHERE ticket_proposals.review_status = 'pending'
         RETURNING proposal_id, item_id, proposal_type, summary, description,
                   assignee_account_id, review_status, execution_status,
-                  jira_issue_key, rationale, evidence, related_meeting_ids, priority,
+                  jira_issue_key, rationale, evidence, priority,
                   issue_type, parent_issue_key
         """,
         proposal.proposal_id,
@@ -87,11 +87,39 @@ async def _upsert_proposal(connection, proposal: TicketProposal):
         proposal.existing_issue_key,
         proposal.rationale,
         evidence,
-        proposal.related_meeting_ids,
         proposal.priority,
         proposal.issue_type,
         proposal.parent_issue_key,
     )
+    if row is None:
+        return None
+    data = dict(row)
+    data["related_meeting_ids"] = await _replace_evidence_meetings(
+        connection, proposal.proposal_id, proposal.related_meeting_ids
+    )
+    return data
+
+
+async def _replace_evidence_meetings(connection, proposal_id: UUID, meeting_ids: list[UUID]) -> list[UUID]:
+    """Store the earlier meetings a proposal quotes as evidence and return them.
+
+    Meetings not in PostgreSQL (e.g. only indexed in Cosmos DB) are left out,
+    so every link points at a real meeting.
+    """
+    await connection.execute("DELETE FROM proposal_meetings WHERE proposal_id = $1", proposal_id)
+    if not meeting_ids:
+        return []
+    rows = await connection.fetch(
+        """
+        INSERT INTO proposal_meetings (proposal_id, meeting_id)
+        SELECT $1, m.meeting_id FROM meetings AS m WHERE m.meeting_id = ANY($2::uuid[])
+        ON CONFLICT DO NOTHING
+        RETURNING meeting_id
+        """,
+        proposal_id,
+        list(meeting_ids),
+    )
+    return [row["meeting_id"] for row in rows]
 
 
 async def apply_revisions(
@@ -142,11 +170,7 @@ async def _append_revision(connection, revision: ProposalRevision, meeting_date:
         """
         UPDATE ticket_proposals SET
             description = COALESCE(description, '') || $2,
-            evidence = evidence || $3::jsonb,
-            related_meeting_ids = CASE
-                WHEN $4::uuid = ANY(related_meeting_ids) THEN related_meeting_ids
-                ELSE array_append(related_meeting_ids, $4::uuid)
-            END
+            evidence = evidence || $3::jsonb
         WHERE proposal_id = $1
           AND review_status = 'pending'
           -- Each item revises a suggestion once. The marker check also covers
@@ -167,8 +191,10 @@ async def _append_revision(connection, revision: ProposalRevision, meeting_date:
           )
         RETURNING proposal_id, item_id, proposal_type, summary, description,
                   assignee_account_id, review_status, execution_status,
-                  jira_issue_key, rationale, evidence, related_meeting_ids, priority,
-                  issue_type, parent_issue_key
+                  jira_issue_key, rationale, evidence, priority,
+                  issue_type, parent_issue_key,
+                  ARRAY(SELECT pm.meeting_id FROM proposal_meetings AS pm
+                        WHERE pm.proposal_id = ticket_proposals.proposal_id) AS related_meeting_ids
         """,
         revision.proposal_id,
         note,

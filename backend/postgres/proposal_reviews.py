@@ -24,6 +24,8 @@ _PROPOSAL_COLUMNS = """p.*, c.jira_url, c.status AS jira_status,
         pp.review_status AS parent_proposal_review_status,
         pp.jira_issue_key AS parent_proposal_issue_key,
         origin.meeting_id AS origin_meeting_id,
+        ARRAY(SELECT pm.meeting_id FROM proposal_meetings pm
+              WHERE pm.proposal_id = p.proposal_id) AS related_meeting_ids,
         (SELECT COALESCE(json_agg(json_build_object(
                     'meeting_id', r.meeting_id, 'meeting_title', rm.title,
                     'change', r.change, 'created_at', r.created_at
