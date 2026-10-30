@@ -1,6 +1,7 @@
 ROLLBACK;
 BEGIN;
 
+-- One row per recording: title, date, transcript location, processing status
 CREATE TABLE IF NOT EXISTS meetings (
     meeting_id UUID PRIMARY KEY,
     title TEXT NOT NULL,
@@ -10,6 +11,7 @@ CREATE TABLE IF NOT EXISTS meetings (
         CHECK (processing_status IN ('pending', 'processing', 'completed', 'failed'))
 );
 
+-- Actions, decisions, questions and problems extracted from a meeting
 CREATE TABLE IF NOT EXISTS meeting_items (
     item_id UUID PRIMARY KEY,
     meeting_id UUID NOT NULL REFERENCES meetings(meeting_id),
@@ -20,6 +22,7 @@ CREATE TABLE IF NOT EXISTS meeting_items (
     related_problem_item_id UUID REFERENCES meeting_items(item_id) ON DELETE SET NULL
 );
 
+-- Recurrence check for each problem: new, recurring, or regressed
 CREATE TABLE IF NOT EXISTS problem_assessments (
     item_id UUID PRIMARY KEY REFERENCES meeting_items(item_id) ON DELETE CASCADE,
     is_problem BOOLEAN NOT NULL,
@@ -40,6 +43,7 @@ CREATE TABLE IF NOT EXISTS problem_assessments (
     assessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Local copy of the Jira issues, kept up to date by the sync
 CREATE TABLE IF NOT EXISTS jira_issue_cache (
     issue_key TEXT PRIMARY KEY,
     summary TEXT NOT NULL,
@@ -56,6 +60,7 @@ CREATE TABLE IF NOT EXISTS jira_issue_cache (
     components TEXT[]
 );
 
+-- Suggestions and their review and execution status
 CREATE TABLE IF NOT EXISTS ticket_proposals (
     proposal_id UUID PRIMARY KEY,
     item_id UUID NOT NULL REFERENCES meeting_items(item_id) ON DELETE CASCADE,
@@ -107,3 +112,10 @@ SELECT * FROM jira_issue_cache;
 SELECT * FROM ticket_proposals;
 SELECT * FROM proposal_meetings;
 SELECT * FROM proposal_revisions;
+
+DELETE FROM meetings WHERE meeting_id IN ('43ed589a-0270-45ae-bcf0-f0e470d62bd5');
+
+DELETE FROM meeting_items WHERE meeting_id IN ('43ed589a-0270-45ae-bcf0-f0e470d62bd5');
+
+SELECT * FROM proposal_meetings
+WHERE meeting_id IN ('43ed589a-0270-45ae-bcf0-f0e470d62bd5');
