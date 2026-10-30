@@ -150,7 +150,8 @@ export default function MeetingAssistant({
                 {[
                   "What were the key decisions in our latest meeting?",
                   "Which open Jira tickets need attention?",
-                  "Is there an update from last meeting's Jira tickets?",
+
+                  "What did we discuss last meeting? Are there relevant tickets for that?",
                 ].map((question) => (
                   <button
                     type="button"
